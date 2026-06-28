@@ -32,7 +32,6 @@ import {
   disconnectDeriv,
 } from "@/lib/deriv/connections.functions";
 import { recordOutcome } from "@/lib/ai/qwen.functions";
-import { analyzeMarketWithHfRouter } from "@/lib/ai/hf-router.client";
 import { logTradeOpen, logTradeClose, checkRisk } from "@/lib/trading/execute.functions";
 import { supabase } from "@/integrations/supabase/client";
 import { fmtMoney, fmtPct } from "@/lib/format";
@@ -235,6 +234,7 @@ function Dashboard() {
     setAiBusy(true);
     setAi(null);
     try {
+      const { analyzeMarketWithHfRouter } = await import("@/lib/ai/hf-router");
       const res = await analyzeMarketWithHfRouter({
         symbol,
         timeframe: "1m",
