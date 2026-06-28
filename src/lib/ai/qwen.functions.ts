@@ -71,7 +71,7 @@ async function callQwen(systemPrompt: string, userPrompt: string): Promise<strin
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: process.env.HF_MODEL ?? "Qwen/Qwen2.5-7B-Instruct",
+      model: process.env.HF_MODEL ?? "Qwen/Qwen2.5-7B-Instruct:together",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -157,7 +157,7 @@ export const analyzeMarket = createServerFn({ method: "POST" })
         stop_loss: parsed.stop_loss ?? null,
         confidence,
         reasoning: parsed.reasoning ?? "",
-        model: "Qwen/Qwen2.5-7B-Instruct",
+        model: process.env.HF_MODEL ?? "Qwen/Qwen2.5-7B-Instruct:together",
         candles_snapshot: recent,
         ob_zones: data.ob_zones,
         fvg_zones: data.fvg_zones,

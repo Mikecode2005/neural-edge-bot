@@ -1,7 +1,7 @@
 import type { DerivCandle } from "@/lib/deriv/ws";
 import type { LiveAnalysis } from "@/lib/ob-fvg";
 
-const DEFAULT_HF_MODEL = "Qwen/Qwen2.5-7B-Instruct";
+const DEFAULT_HF_MODEL = "Qwen/Qwen2.5-7B-Instruct:together";
 
 const DOCTRINE = `You are an expert Smart Money Concepts (SMC) trader specialising in synthetic indices on Deriv.
 The strategy is Order Block + Fair Value Gap (OB + FVG).
