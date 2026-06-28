@@ -115,9 +115,10 @@ class DerivWS {
           reject(new Error(msg.error.message));
           return;
         }
-        if (msg.subscription?.id && !subId) {
-          subId = msg.subscription.id;
-          this.subs.set(subId, onMessage);
+        const newSubId = msg.subscription?.id as string | undefined;
+        if (newSubId && !subId) {
+          subId = newSubId;
+          this.subs.set(newSubId, onMessage);
         }
         resolve(msg);
       });
