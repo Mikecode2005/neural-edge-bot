@@ -41,7 +41,10 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
     meta: [
       { title: "Dashboard — AI Trading Workstation" },
-      { name: "description", content: "Live AI-driven Order Block + FVG trading on Deriv synthetics." },
+      {
+        name: "description",
+        content: "Live AI-driven Order Block + FVG trading on Deriv synthetics.",
+      },
     ],
   }),
   component: Dashboard,
@@ -88,7 +91,9 @@ function Dashboard() {
   const [ai, setAi] = useState<AIResult | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [tradeBusy, setTradeBusy] = useState(false);
-  const openTradeRowRef = useRef<{ id: string; decisionId?: string; contractId: string } | null>(null);
+  const openTradeRowRef = useRef<{ id: string; decisionId?: string; contractId: string } | null>(
+    null,
+  );
 
   // server fns
   const fnListAccounts = useServerFn(listDerivAccounts);
@@ -356,7 +361,10 @@ function Dashboard() {
         <div className="flex items-center gap-2 text-xs">
           {connected ? (
             <>
-              <Badge variant={activeType === "demo" ? "secondary" : "destructive"} className="gap-1">
+              <Badge
+                variant={activeType === "demo" ? "secondary" : "destructive"}
+                className="gap-1"
+              >
                 <Power className="size-3" />
                 {activeType === "demo" ? "DEMO" : "REAL"} · {activeLogin}
               </Badge>
@@ -395,7 +403,8 @@ function Dashboard() {
             <div>
               <p className="text-sm font-medium">Link your Deriv account to start trading</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Live market data shows below using public feeds. Connect Deriv to see balance and place real (or demo) trades.
+                Live market data shows below using public feeds. Connect Deriv to see balance and
+                place real (or demo) trades.
               </p>
             </div>
             <Button onClick={onConnectDeriv} className="gap-1.5">
@@ -423,11 +432,11 @@ function Dashboard() {
           value={ai ? fmtPct(ai.confidence) : analysis ? fmtPct(analysis.confidence) : "—"}
           sublabel={`Signal · ${ai?.direction ?? analysis?.decision ?? "—"}`}
           tone={
-            (ai?.direction === "CALL" || analysis?.decision === "BUY")
+            ai?.direction === "CALL" || analysis?.decision === "BUY"
               ? "bull"
-              : (ai?.direction === "PUT" || analysis?.decision === "SELL")
-              ? "bear"
-              : "warn"
+              : ai?.direction === "PUT" || analysis?.decision === "SELL"
+                ? "bear"
+                : "warn"
           }
           icon={<Brain className="size-3.5" />}
         />
@@ -435,9 +444,7 @@ function Dashboard() {
           label="Market Trend"
           value={analysis?.trend?.toUpperCase() ?? "—"}
           sublabel={
-            analysis
-              ? `EMA20 ${analysis.ema20.toFixed(4)} · RSI ${analysis.rsi14.toFixed(0)}`
-              : ""
+            analysis ? `EMA20 ${analysis.ema20.toFixed(4)} · RSI ${analysis.rsi14.toFixed(0)}` : ""
           }
           tone={analysis?.trend === "up" ? "bull" : "bear"}
           icon={<BarChart3 className="size-3.5" />}
@@ -459,7 +466,9 @@ function Dashboard() {
               <Cpu className="size-4 text-primary" />
               <h3 className="text-sm font-semibold">AI Decision</h3>
             </div>
-            <Badge variant="outline" className="text-[10px]">HF Router · Qwen 2.5 7B</Badge>
+            <Badge variant="outline" className="text-[10px]">
+              HF Router · Qwen 2.5 7B
+            </Badge>
           </div>
 
           <Button onClick={onAnalyze} disabled={aiBusy || !analysis} className="gap-1.5">
@@ -475,8 +484,8 @@ function Dashboard() {
                     ai.direction === "CALL"
                       ? "default"
                       : ai.direction === "PUT"
-                      ? "destructive"
-                      : "secondary"
+                        ? "destructive"
+                        : "secondary"
                   }
                 >
                   {ai.direction}
@@ -485,7 +494,9 @@ function Dashboard() {
                   Confidence {(ai.confidence * 100).toFixed(0)}%
                 </span>
                 {ai.lesson_added && (
-                  <Badge variant="outline" className="text-[10px]">+ lesson</Badge>
+                  <Badge variant="outline" className="text-[10px]">
+                    + lesson
+                  </Badge>
                 )}
               </div>
 
@@ -501,7 +512,9 @@ function Dashboard() {
                   </div>
                   <div className="rounded-md bg-card/50 p-2 border border-border">
                     <p className="text-muted-foreground">Duration</p>
-                    <p className="font-mono">{ai.duration} {ai.duration_unit}</p>
+                    <p className="font-mono">
+                      {ai.duration} {ai.duration_unit}
+                    </p>
                   </div>
                   <div className="rounded-md bg-card/50 p-2 border border-border">
                     <p className="text-muted-foreground">Take Profit</p>
@@ -525,15 +538,15 @@ function Dashboard() {
                   {tradeBusy
                     ? "Placing…"
                     : connected
-                    ? `Execute ${ai.direction} on ${activeType.toUpperCase()}`
-                    : "Connect Deriv to execute"}
+                      ? `Execute ${ai.direction} on ${activeType.toUpperCase()}`
+                      : "Connect Deriv to execute"}
                 </Button>
               )}
             </div>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Click "Analyze" — the frontend calls Hugging Face Router directly with your
-              Vite HF token, then Qwen returns a structured prediction plus explanation.
+              Click "Analyze" — the frontend calls Hugging Face Router directly with your Vite HF
+              token, then Qwen returns a structured prediction plus explanation.
             </p>
           )}
         </div>

@@ -54,11 +54,15 @@ interface AnalyzeWithHfRouterInput {
 
 function getHfConfig() {
   const apiKey = import.meta.env.VITE_HF_API_KEY as string | undefined;
-  const routerUrl = (import.meta.env.VITE_HF_ROUTER_URL as string | undefined) ?? "https://router.huggingface.co/v1";
+  const routerUrl =
+    (import.meta.env.VITE_HF_ROUTER_URL as string | undefined) ??
+    "https://router.huggingface.co/v1";
   const model = (import.meta.env.VITE_HF_MODEL as string | undefined) ?? DEFAULT_HF_MODEL;
 
   if (!apiKey) {
-    throw new Error("VITE_HF_API_KEY is not configured. Add it to .env and restart the Vite dev server.");
+    throw new Error(
+      "VITE_HF_API_KEY is not configured. Add it to .env and restart the Vite dev server.",
+    );
   }
 
   return {
@@ -119,10 +123,24 @@ export async function analyzeMarketWithHfRouter({
       c: c.close,
     })),
     order_blocks: analysis.activeOB
-      ? [{ type: "OB", kind: analysis.activeOB.kind, top: analysis.activeOB.top, bottom: analysis.activeOB.bottom }]
+      ? [
+          {
+            type: "OB",
+            kind: analysis.activeOB.kind,
+            top: analysis.activeOB.top,
+            bottom: analysis.activeOB.bottom,
+          },
+        ]
       : [],
     fair_value_gaps: analysis.activeFVG
-      ? [{ type: "FVG", kind: analysis.activeFVG.kind, top: analysis.activeFVG.top, bottom: analysis.activeFVG.bottom }]
+      ? [
+          {
+            type: "FVG",
+            kind: analysis.activeFVG.kind,
+            top: analysis.activeFVG.top,
+            bottom: analysis.activeFVG.bottom,
+          },
+        ]
       : [],
   });
 
@@ -158,7 +176,9 @@ export async function analyzeMarketWithHfRouter({
     ? parsed.direction
     : "NONE";
   const confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
-  const durationUnit = ["t", "s", "m", "h"].includes(parsed.duration_unit) ? parsed.duration_unit : "t";
+  const durationUnit = ["t", "s", "m", "h"].includes(parsed.duration_unit)
+    ? parsed.duration_unit
+    : "t";
 
   return {
     direction,
@@ -168,7 +188,10 @@ export async function analyzeMarketWithHfRouter({
     duration_unit: durationUnit,
     take_profit: asNumberOrNull(parsed.take_profit),
     stop_loss: asNumberOrNull(parsed.stop_loss),
-    reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : "No explanation returned by the model.",
+    reasoning:
+      typeof parsed.reasoning === "string"
+        ? parsed.reasoning
+        : "No explanation returned by the model.",
     lesson_added: false,
     model,
   };
