@@ -31,7 +31,8 @@ import {
   setActiveDerivAccount,
   disconnectDeriv,
 } from "@/lib/deriv/connections.functions";
-import { analyzeMarket, recordOutcome } from "@/lib/ai/qwen.functions";
+import { recordOutcome } from "@/lib/ai/qwen.functions";
+import { analyzeMarketWithHfRouter } from "@/lib/ai/hf-router.client";
 import { logTradeOpen, logTradeClose, checkRisk } from "@/lib/trading/execute.functions";
 import { supabase } from "@/integrations/supabase/client";
 import { fmtMoney, fmtPct } from "@/lib/format";
@@ -47,7 +48,7 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 });
 
 interface AIResult {
-  decision_id: string;
+  decision_id?: string;
   direction: "CALL" | "PUT" | "NONE";
   confidence: number;
   stake: number | null;
@@ -57,6 +58,7 @@ interface AIResult {
   stop_loss: number | null;
   reasoning: string;
   lesson_added: boolean;
+  model?: string;
 }
 
 interface AccountRow {
@@ -86,14 +88,13 @@ function Dashboard() {
   const [ai, setAi] = useState<AIResult | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [tradeBusy, setTradeBusy] = useState(false);
-  const openTradeRowRef = useRef<{ id: string; decisionId: string; contractId: string } | null>(null);
+  const openTradeRowRef = useRef<{ id: string; decisionId?: string; contractId: string } | null>(null);
 
   // server fns
   const fnListAccounts = useServerFn(listDerivAccounts);
   const fnGetToken = useServerFn(getActiveDerivToken);
   const fnSetActive = useServerFn(setActiveDerivAccount);
   const fnDisconnect = useServerFn(disconnectDeriv);
-  const fnAnalyze = useServerFn(analyzeMarket);
   const fnLogOpen = useServerFn(logTradeOpen);
   const fnLogClose = useServerFn(logTradeClose);
   const fnRecordOutcome = useServerFn(recordOutcome);
@@ -229,21 +230,14 @@ function Dashboard() {
     setAiBusy(true);
     setAi(null);
     try {
-      const res = (await fnAnalyze({
-        data: {
-          symbol,
-          timeframe: "1m",
-          candles: candles.slice(-60),
-          ob_zones: [
-            ...(analysis.activeOB ? [{ type: "OB", top: analysis.activeOB.top, bottom: analysis.activeOB.bottom }] : []),
-          ],
-          fvg_zones: [
-            ...(analysis.activeFVG ? [{ type: "FVG", top: analysis.activeFVG.top, bottom: analysis.activeFVG.bottom }] : []),
-          ],
-          current_price: livePrice,
-          balance: balance ?? 1000,
-        },
-      })) as AIResult;
+      const res = await analyzeMarketWithHfRouter({
+        symbol,
+        timeframe: "1m",
+        candles: candles.slice(-60),
+        analysis,
+        currentPrice: livePrice,
+        balance: balance ?? 1000,
+      });
       setAi(res);
       if (res.direction === "NONE") {
         toast.message("AI says wait", { description: res.reasoning });
@@ -322,9 +316,11 @@ function Dashboard() {
           const ref = openTradeRowRef.current;
           if (ref) {
             await fnLogClose({ data: { trade_id: ref.id, exit_price: exit, pnl, outcome } });
-            await fnRecordOutcome({
-              data: { decision_id: ref.decisionId, outcome, pnl, contract_id: ref.contractId },
-            });
+            if (ref.decisionId) {
+              await fnRecordOutcome({
+                data: { decision_id: ref.decisionId, outcome, pnl, contract_id: ref.contractId },
+              });
+            }
             openTradeRowRef.current = null;
           }
           toast[outcome === "win" ? "success" : outcome === "loss" ? "error" : "message"](
@@ -366,6 +362,7 @@ function Dashboard() {
               </Badge>
               {accounts.length > 1 && (
                 <select
+                  aria-label="Select active Deriv account"
                   className="bg-card border border-border rounded-md px-2 py-1 text-xs"
                   value={activeLogin ?? ""}
                   onChange={(e) => onSwitchAccount(e.target.value)}
@@ -462,7 +459,7 @@ function Dashboard() {
               <Cpu className="size-4 text-primary" />
               <h3 className="text-sm font-semibold">AI Decision</h3>
             </div>
-            <Badge variant="outline" className="text-[10px]">Qwen 2.5 7B</Badge>
+            <Badge variant="outline" className="text-[10px]">HF Router · Qwen 2.5 7B</Badge>
           </div>
 
           <Button onClick={onAnalyze} disabled={aiBusy || !analysis} className="gap-1.5">
@@ -535,9 +532,8 @@ function Dashboard() {
             </div>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Click "Analyze" — Qwen reads the live candles, recalls past lessons from
-              <code className="mx-1 text-[10px] px-1 py-0.5 bg-card rounded">strategy_memory</code>,
-              and returns a structured decision with TP/SL.
+              Click "Analyze" — the frontend calls Hugging Face Router directly with your
+              Vite HF token, then Qwen returns a structured prediction plus explanation.
             </p>
           )}
         </div>
