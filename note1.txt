@@ -1,0 +1,107 @@
+from fastapi import FastAPI
+from pydantic import BaseModel
+import torch
+import torch.nn as nn
+import numpy as np
+
+app = FastAPI(title="NeuroHealth EEG API", version="DEMO-AD-ONLY")
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ======================
+# LABELS
+# ======================
+AD_CLASSES = ["Alzheimer", "FTD", "Control"]
+
+# ======================
+# INPUT MODEL
+# ======================
+class EEGRequest(BaseModel):
+    features: list
+
+# ======================
+# AD MODEL - 1D CNN
+# ======================
+class EEG_CNN_AD(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv1d(19, 32, 7, padding=3)
+        self.bn1 = nn.BatchNorm1d(32)
+
+        self.conv2 = nn.Conv1d(32, 64, 5, padding=2)
+        self.bn2 = nn.BatchNorm1d(64)
+
+        self.conv3 = nn.Conv1d(64, 128, 3, padding=1)
+        self.bn3 = nn.BatchNorm1d(128)
+
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(128, 3)
+
+    def forward(self, x):
+        x = x.view(x.size(0), 19, 76)
+        x = torch.relu(self.bn1(self.conv1(x)))
+        x = torch.relu(self.bn2(self.conv2(x)))
+        x = torch.relu(self.bn3(self.conv3(x)))
+        x = self.pool(x).squeeze(-1)
+        return self.fc(x)
+
+# ======================
+# LOAD MODEL
+# ======================
+AD_PATH = "AD_eeg_cnn_ad_ftd_cn.pt"
+
+print("Loading AD model...")
+ad_model = EEG_CNN_AD().to(DEVICE)
+
+ad_model.load_state_dict(
+    torch.load(AD_PATH, map_location=DEVICE)
+)
+
+ad_model.eval()
+print("AD model loaded successfully")
+
+# ======================
+# PREPROCESS
+# ======================
+def preprocess(features):
+    x = torch.tensor(features, dtype=torch.float32).to(DEVICE)
+
+    if len(x.shape) == 1:
+        x = x.view(1, 19, 76)
+    elif len(x.shape) == 2:
+        x = x.unsqueeze(0)
+
+    return x
+
+# ======================
+# PREDICT FUNCTION
+# ======================
+def predict(model, x, classes):
+    with torch.no_grad():
+        out = model(x)
+        probs = torch.softmax(out, dim=1).cpu().numpy()[0]
+        pred = int(np.argmax(probs))
+
+        return {
+            "prediction": classes[pred],
+            "confidence": float(probs[pred]),
+            "probabilities": {
+                classes[i]: float(probs[i]) for i in range(len(classes))
+            }
+        }
+
+# ======================
+# ROUTES
+# ======================
+@app.get("/")
+def home():
+    return {
+        "status": "ready",
+        "message": "NeuroHealth EEG API - Alzheimer Demo Mode",
+        "year": 2026
+    }
+
+@app.post("/predict/ad")
+def predict_ad(req: EEGRequest):
+    x = preprocess(req.features)
+    return predict(ad_model, x, AD_CLASSES)
