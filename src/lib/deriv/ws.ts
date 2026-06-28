@@ -127,7 +127,7 @@ class DerivWS {
     onMessage(first);
     return () => {
       if (subId) {
-        this.subs.delete(subId);
+        this.subs.delete(subId as string);
         this.send({ forget: subId }).catch(() => {});
       }
     };
