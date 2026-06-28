@@ -14,6 +14,78 @@ export type Database = {
   }
   public: {
     Tables: {
+      ai_decisions: {
+        Row: {
+          candles_snapshot: Json | null
+          confidence: number
+          contract_id: string | null
+          created_at: string
+          direction: string
+          duration: number | null
+          duration_unit: string | null
+          executed: boolean
+          fvg_zones: Json | null
+          id: string
+          model: string | null
+          ob_zones: Json | null
+          prompt_hash: string | null
+          reasoning: string | null
+          recalled_memory: Json | null
+          stake: number | null
+          stop_loss: number | null
+          symbol: string
+          take_profit: number | null
+          timeframe: string
+          user_id: string
+        }
+        Insert: {
+          candles_snapshot?: Json | null
+          confidence: number
+          contract_id?: string | null
+          created_at?: string
+          direction: string
+          duration?: number | null
+          duration_unit?: string | null
+          executed?: boolean
+          fvg_zones?: Json | null
+          id?: string
+          model?: string | null
+          ob_zones?: Json | null
+          prompt_hash?: string | null
+          reasoning?: string | null
+          recalled_memory?: Json | null
+          stake?: number | null
+          stop_loss?: number | null
+          symbol: string
+          take_profit?: number | null
+          timeframe: string
+          user_id: string
+        }
+        Update: {
+          candles_snapshot?: Json | null
+          confidence?: number
+          contract_id?: string | null
+          created_at?: string
+          direction?: string
+          duration?: number | null
+          duration_unit?: string | null
+          executed?: boolean
+          fvg_zones?: Json | null
+          id?: string
+          model?: string | null
+          ob_zones?: Json | null
+          prompt_hash?: string | null
+          reasoning?: string | null
+          recalled_memory?: Json | null
+          stake?: number | null
+          stop_loss?: number | null
+          symbol?: string
+          take_profit?: number | null
+          timeframe?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       api_connections: {
         Row: {
           active: boolean
@@ -83,6 +155,90 @@ export type Database = {
           meta?: Json | null
           user_agent?: string | null
           user_id?: string | null
+        }
+        Relationships: []
+      }
+      bot_runs: {
+        Row: {
+          account_type: string
+          id: string
+          mode: string
+          started_at: string
+          status: string
+          stopped_at: string | null
+          symbol: string
+          total_pnl: number
+          total_trades: number
+          user_id: string
+        }
+        Insert: {
+          account_type: string
+          id?: string
+          mode: string
+          started_at?: string
+          status?: string
+          stopped_at?: string | null
+          symbol: string
+          total_pnl?: number
+          total_trades?: number
+          user_id: string
+        }
+        Update: {
+          account_type?: string
+          id?: string
+          mode?: string
+          started_at?: string
+          status?: string
+          stopped_at?: string | null
+          symbol?: string
+          total_pnl?: number
+          total_trades?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
+      deriv_connections: {
+        Row: {
+          access_token_encrypted: string
+          account_type: string
+          balance: number | null
+          created_at: string
+          currency: string | null
+          expires_at: string | null
+          id: string
+          is_active: boolean
+          loginid: string
+          refresh_token_encrypted: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          access_token_encrypted: string
+          account_type: string
+          balance?: number | null
+          created_at?: string
+          currency?: string | null
+          expires_at?: string | null
+          id?: string
+          is_active?: boolean
+          loginid: string
+          refresh_token_encrypted?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          access_token_encrypted?: string
+          account_type?: string
+          balance?: number | null
+          created_at?: string
+          currency?: string | null
+          expires_at?: string | null
+          id?: string
+          is_active?: boolean
+          loginid?: string
+          refresh_token_encrypted?: string | null
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }
@@ -509,6 +665,7 @@ export type Database = {
       }
       settings: {
         Row: {
+          account_mode: string
           auto_trade: boolean
           confidence_threshold: number
           created_at: string
@@ -519,6 +676,9 @@ export type Database = {
           language: string
           max_daily_loss: number
           max_open_trades: number
+          max_stake: number
+          max_trades_per_day: number
+          min_confidence: number
           notifications_enabled: boolean
           preferred_indicators: Json
           risk_percent: number
@@ -527,6 +687,7 @@ export type Database = {
           user_id: string | null
         }
         Insert: {
+          account_mode?: string
           auto_trade?: boolean
           confidence_threshold?: number
           created_at?: string
@@ -537,6 +698,9 @@ export type Database = {
           language?: string
           max_daily_loss?: number
           max_open_trades?: number
+          max_stake?: number
+          max_trades_per_day?: number
+          min_confidence?: number
           notifications_enabled?: boolean
           preferred_indicators?: Json
           risk_percent?: number
@@ -545,6 +709,7 @@ export type Database = {
           user_id?: string | null
         }
         Update: {
+          account_mode?: string
           auto_trade?: boolean
           confidence_threshold?: number
           created_at?: string
@@ -555,6 +720,9 @@ export type Database = {
           language?: string
           max_daily_loss?: number
           max_open_trades?: number
+          max_stake?: number
+          max_trades_per_day?: number
+          min_confidence?: number
           notifications_enabled?: boolean
           preferred_indicators?: Json
           risk_percent?: number
@@ -606,8 +774,60 @@ export type Database = {
         }
         Relationships: []
       }
+      strategy_memory: {
+        Row: {
+          created_at: string
+          id: string
+          last_used_at: string | null
+          lesson: string
+          outcome: string | null
+          pnl: number | null
+          setup_type: string | null
+          symbol: string | null
+          tags: string[] | null
+          timeframe: string | null
+          times_recalled: number
+          updated_at: string
+          usefulness_score: number
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          last_used_at?: string | null
+          lesson: string
+          outcome?: string | null
+          pnl?: number | null
+          setup_type?: string | null
+          symbol?: string | null
+          tags?: string[] | null
+          timeframe?: string | null
+          times_recalled?: number
+          updated_at?: string
+          usefulness_score?: number
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          last_used_at?: string | null
+          lesson?: string
+          outcome?: string | null
+          pnl?: number | null
+          setup_type?: string | null
+          symbol?: string | null
+          tags?: string[] | null
+          timeframe?: string | null
+          times_recalled?: number
+          updated_at?: string
+          usefulness_score?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
       trade_history: {
         Row: {
+          ai_decision_id: string | null
           closed_at: string | null
           created_at: string
           deriv_contract_id: string | null
@@ -630,6 +850,7 @@ export type Database = {
           user_id: string | null
         }
         Insert: {
+          ai_decision_id?: string | null
           closed_at?: string | null
           created_at?: string
           deriv_contract_id?: string | null
@@ -652,6 +873,7 @@ export type Database = {
           user_id?: string | null
         }
         Update: {
+          ai_decision_id?: string | null
           closed_at?: string | null
           created_at?: string
           deriv_contract_id?: string | null
@@ -674,6 +896,13 @@ export type Database = {
           user_id?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "trade_history_ai_decision_id_fkey"
+            columns: ["ai_decision_id"]
+            isOneToOne: false
+            referencedRelation: "ai_decisions"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "trade_history_prediction_id_fkey"
             columns: ["prediction_id"]
