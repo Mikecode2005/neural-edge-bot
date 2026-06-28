@@ -71,7 +71,7 @@ async function callQwen(systemPrompt: string, userPrompt: string): Promise<strin
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "Qwen/Qwen2.5-7B-Instruct:hyperbolic",
+      model: process.env.HF_MODEL ?? "Qwen/Qwen2.5-7B-Instruct",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },

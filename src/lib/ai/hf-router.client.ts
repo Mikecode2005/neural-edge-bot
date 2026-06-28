@@ -1,7 +1,7 @@
 import type { DerivCandle } from "@/lib/deriv/ws";
 import type { LiveAnalysis } from "@/lib/ob-fvg";
 
-const HF_MODEL = "Qwen/Qwen2.5-7B-Instruct:hyperbolic";
+const DEFAULT_HF_MODEL = "Qwen/Qwen2.5-7B-Instruct";
 
 const DOCTRINE = `You are an expert Smart Money Concepts (SMC) trader specialising in synthetic indices on Deriv.
 The strategy is Order Block + Fair Value Gap (OB + FVG).
@@ -55,6 +55,7 @@ interface AnalyzeWithHfRouterInput {
 function getHfConfig() {
   const apiKey = import.meta.env.VITE_HF_API_KEY as string | undefined;
   const routerUrl = (import.meta.env.VITE_HF_ROUTER_URL as string | undefined) ?? "https://router.huggingface.co/v1";
+  const model = (import.meta.env.VITE_HF_MODEL as string | undefined) ?? DEFAULT_HF_MODEL;
 
   if (!apiKey) {
     throw new Error("VITE_HF_API_KEY is not configured. Add it to .env and restart the Vite dev server.");
@@ -62,6 +63,7 @@ function getHfConfig() {
 
   return {
     apiKey,
+    model,
     chatCompletionsUrl: `${routerUrl.replace(/\/$/, "")}/chat/completions`,
   };
 }
@@ -88,7 +90,7 @@ export async function analyzeMarketWithHfRouter({
   currentPrice,
   balance,
 }: AnalyzeWithHfRouterInput): Promise<ClientAIResult> {
-  const { apiKey, chatCompletionsUrl } = getHfConfig();
+  const { apiKey, chatCompletionsUrl, model } = getHfConfig();
   const recent = candles.slice(-60);
 
   const userPrompt = JSON.stringify({
@@ -131,7 +133,7 @@ export async function analyzeMarketWithHfRouter({
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: HF_MODEL,
+      model,
       messages: [
         { role: "system", content: DOCTRINE },
         { role: "user", content: userPrompt },
@@ -168,6 +170,6 @@ export async function analyzeMarketWithHfRouter({
     stop_loss: asNumberOrNull(parsed.stop_loss),
     reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : "No explanation returned by the model.",
     lesson_added: false,
-    model: HF_MODEL,
+    model,
   };
 }
