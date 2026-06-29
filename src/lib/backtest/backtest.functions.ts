@@ -14,7 +14,7 @@ const SaveInput = z.object({
   trades_count: z.number(),
   equity_curve: z.array(z.object({ t: z.number(), equity: z.number() })),
   trades: z.array(z.any()),
-  params: z.record(z.any()).default({}),
+  params: z.record(z.string(), z.any()).default({}),
 });
 
 export const saveBacktest = createServerFn({ method: "POST" })
@@ -37,7 +37,7 @@ export const saveBacktest = createServerFn({ method: "POST" })
         trades_count: data.trades_count,
         equity_curve: data.equity_curve,
         trades: data.trades,
-        params: data.params,
+        params: data.params as any,
         status: "done",
       })
       .select()
