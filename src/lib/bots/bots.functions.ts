@@ -11,6 +11,7 @@ const StartInput = z.object({
   interval_seconds: z.number().int().min(10).max(3600).default(60),
   min_confidence: z.number().min(0).max(1).default(0.7),
   max_stake_per_trade: z.number().positive().default(1),
+  account_balance: z.number().positive().default(1000),
 });
 
 export const startBot = createServerFn({ method: "POST" })
@@ -31,6 +32,7 @@ export const startBot = createServerFn({ method: "POST" })
         interval_seconds: data.interval_seconds,
         min_confidence: data.min_confidence,
         max_stake_per_trade: data.max_stake_per_trade,
+        account_balance: data.account_balance,
         status: "running",
       })
       .select()
@@ -97,5 +99,26 @@ export const tickBot = createServerFn({ method: "POST" })
         last_error: data.error ?? null,
       })
       .eq("id", data.id);
+    return { ok: true };
+  });
+
+export const updateBotBalance = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        account_balance: z.number().positive(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { error } = await supabaseAdmin
+      .from("bot_runs")
+      .update({ account_balance: data.account_balance })
+      .eq("id", data.id)
+      .eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
     return { ok: true };
   });
