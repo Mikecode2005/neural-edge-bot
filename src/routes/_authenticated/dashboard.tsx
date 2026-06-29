@@ -15,6 +15,7 @@ import {
   Zap,
 } from "lucide-react";
 
+import { AppNav } from "@/components/AppNav";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { SymbolSelector } from "@/components/dashboard/SymbolSelector";
 import { PriceChart } from "@/components/dashboard/PriceChart";
@@ -77,6 +78,7 @@ function Dashboard() {
   const [symbol, setSymbol] = useState("R_10");
   const [candles, setCandles] = useState<DerivCandle[]>([]);
   const [livePrice, setLivePrice] = useState<number | null>(null);
+  const [chartType, setChartType] = useState<"line" | "prediction" | "candle">("prediction");
 
   // Auth/account
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
@@ -343,8 +345,10 @@ function Dashboard() {
   const connected = !!activeToken;
 
   return (
-    <div className="min-h-screen px-6 py-6 max-w-[1600px] mx-auto">
+    <div className="min-h-screen bg-background">
       <Toaster theme="dark" position="top-right" richColors />
+      <AppNav />
+      <div className="px-6 py-6 max-w-[1600px] mx-auto">
 
       <header className="flex flex-wrap items-center justify-between gap-4 mb-6">
         <div className="flex items-center gap-3">
@@ -549,8 +553,8 @@ function Dashboard() {
               token, then Qwen returns a structured prediction plus explanation.
             </p>
           )}
-        </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 }
