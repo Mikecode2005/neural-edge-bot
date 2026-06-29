@@ -455,13 +455,30 @@ function Dashboard() {
         />
       </section>
 
-      <div className="mb-4">
+      <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
         <SymbolSelector value={symbol} onChange={setSymbol} />
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Chart</span>
+          <select
+            value={chartType}
+            onChange={(e) => setChartType(e.target.value as any)}
+            className="bg-card border border-border rounded-md px-2 py-1.5 text-xs"
+            aria-label="Chart type"
+          >
+            <option value="line">Line</option>
+            <option value="prediction">Line + AI prediction</option>
+            <option value="candle">Candle (coming soon)</option>
+          </select>
+        </div>
       </div>
 
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2">
-          <PriceChart candles={candles} analysis={analysis} livePrice={livePrice} />
+          <PriceChart
+            candles={candles}
+            analysis={chartType === "line" ? null : analysis}
+            livePrice={livePrice}
+          />
         </div>
 
         <div className="glass rounded-xl p-4 flex flex-col gap-3 min-h-[420px]">
