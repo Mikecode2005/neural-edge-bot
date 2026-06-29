@@ -241,6 +241,7 @@ export type Database = {
           total_pnl: number
           total_trades: number
           user_id: string
+          account_balance: number
         }
         Insert: {
           account_loginid?: string | null
@@ -261,6 +262,7 @@ export type Database = {
           total_pnl?: number
           total_trades?: number
           user_id: string
+          account_balance?: number
         }
         Update: {
           account_loginid?: string | null
@@ -281,6 +283,7 @@ export type Database = {
           total_pnl?: number
           total_trades?: number
           user_id?: string
+          account_balance?: number
         }
         Relationships: []
       }

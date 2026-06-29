@@ -28,6 +28,7 @@ import {
   Zap,
   Shield,
   Clock,
+  Settings2,
 } from "lucide-react";
 
 import { AppNav } from "@/components/AppNav";
@@ -64,6 +65,7 @@ interface Trade {
   obZone: string | null;
   fvgZone: string | null;
   barsHeld: number;
+  outcome: "WIN" | "LOSS";
 }
 
 interface BacktestMetrics {
@@ -91,12 +93,22 @@ interface BacktestMetrics {
   grossLoss: number;
 }
 
+const TIMEFRAMES = [
+  { code: "1m", value: 60, label: "1 Minute" },
+  { code: "2m", value: 120, label: "2 Minutes" },
+  { code: "5m", value: 300, label: "5 Minutes" },
+  { code: "10m", value: 600, label: "10 Minutes" },
+  { code: "15m", value: 900, label: "15 Minutes" },
+  { code: "30m", value: 1800, label: "30 Minutes" },
+];
+
 function BacktestPage() {
   const fnSave = useServerFn(saveBacktest);
   const fnList = useServerFn(listBacktests);
 
   const [symbol, setSymbol] = useState("R_10");
-  const [count, setCount] = useState(500);
+  const [timeframe, setTimeframe] = useState("1m");
+  const [count, setCount] = useState(1000);
   const [minConfidence, setMinConfidence] = useState(0.65);
   const [stake, setStake] = useState(1);
   const [startingBalance, setStartingBalance] = useState(1000);
@@ -153,12 +165,12 @@ function BacktestPage() {
     const lossRate = localTrades.length > 0 ? losses.length / localTrades.length : 0;
     const expectancy = winRate * avgWin - lossRate * avgLoss;
 
-    // Simplified Sharpe ratio (mean return / std dev of returns)
+    // Simplified Sharpe ratio
     const returns = localTrades.map((t) => t.pnl);
     const meanReturn = returns.reduce((a, b) => a + b, 0) / (returns.length || 1);
     const variance = returns.reduce((a, r) => a + (r - meanReturn) ** 2, 0) / (returns.length || 1);
     const stdDev = Math.sqrt(variance);
-    const sharpe = stdDev > 0 ? (meanReturn / stdDev) * Math.sqrt(252) : 0; // annualized
+    const sharpe = stdDev > 0 ? (meanReturn / stdDev) * Math.sqrt(252) : 0;
 
     const avgBarsHeld = localTrades.length > 0
       ? localTrades.reduce((a, t) => a + t.barsHeld, 0) / localTrades.length
@@ -199,7 +211,8 @@ function BacktestPage() {
     setProgress(0);
     try {
       const ws = getDerivWS();
-      const candles = await ws.fetchCandles(symbol, 60, count);
+      const timeframeMinutes = TIMEFRAMES.find((t) => t.code === timeframe)?.value ?? 60;
+      const candles = await ws.fetchCandles(symbol, timeframeMinutes, count);
       if (candles.length < 60) {
         toast.error("Not enough historical candles");
         return;
@@ -215,66 +228,120 @@ function BacktestPage() {
       let openIdx: number | null = null;
       let openSide: "BUY" | "SELL" | null = null;
       let openEntry = 0;
+      let openSL = 0;
+      let openTP = 0;
       let openAnalysis: any = null;
 
-      for (let i = 60; i < candles.length - 5; i++) {
-        const window = candles.slice(Math.max(0, i - 60), i + 1);
-        const a = analyze(window);
+      // consecutive loss protection tracker
+      let currentStreakLosses = 0;
+      let cooldownCandles = 0;
+
+      for (let i = 60; i < candles.length; i++) {
         const c = candles[i];
 
-        // settle any open trade after 5 bars
-        if (openIdx != null && openSide && i - openIdx >= 5) {
-          const exit = candles[i].close;
-          const dir = openSide === "BUY" ? 1 : -1;
-          const win = (exit - openEntry) * dir > 0;
-          const pnl = win ? stake * 0.85 : -stake;
-          balance += pnl;
-          const cumPnl = balance - startingBalance;
-
-          const obZone = openAnalysis?.activeOB
-            ? `${openAnalysis.activeOB.kind} [${openAnalysis.activeOB.bottom.toFixed(4)}, ${openAnalysis.activeOB.top.toFixed(4)}]`
-            : null;
-          const fvgZone = openAnalysis?.activeFVG
-            ? `${openAnalysis.activeFVG.kind} [${openAnalysis.activeFVG.bottom.toFixed(4)}, ${openAnalysis.activeFVG.top.toFixed(4)}]`
-            : null;
-
-          localTrades.push({
-            t: candles[openIdx].epoch,
-            exitT: c.epoch,
-            side: openSide,
-            entry: openEntry,
-            exit,
-            pnl,
-            cumPnl,
-            confidence: openAnalysis?.confidence ?? 0,
-            trend: openAnalysis?.trend ?? "up",
-            ema20: openAnalysis?.ema20 ?? 0,
-            ema50: openAnalysis?.ema50 ?? 0,
-            rsi14: openAnalysis?.rsi14 ?? 50,
-            atr14: openAnalysis?.atr14 ?? 0,
-            obZone,
-            fvgZone,
-            barsHeld: i - openIdx,
-          });
-          curve.push({ t: c.epoch, equity: balance });
-
-          if (balance > peak) peak = balance;
-          const dd = ((peak - balance) / peak) * 100;
-          ddCurve.push({ t: c.epoch, dd: -dd }); // negative for visual
-
-          openIdx = null;
-          openSide = null;
-          openAnalysis = null;
+        // 1. Cooldown logic
+        if (cooldownCandles > 0 && openIdx === null) {
+          cooldownCandles--;
         }
 
-        if (openIdx == null && a.decision !== "WAIT" && a.confidence >= minConfidence) {
-          openIdx = i;
-          openSide = a.decision;
-          openEntry = c.close;
-          openAnalysis = a;
+        // 2. Settle open trade candle-by-candle (Broker Simulation)
+        if (openIdx !== null && openSide) {
+          const high = c.high;
+          const low = c.low;
+          const close = c.close;
+
+          let hitTP = false;
+          let hitSL = false;
+
+          if (openSide === "BUY") {
+            if (high >= openTP) hitTP = true;
+            if (low <= openSL) hitSL = true;
+          } else {
+            if (low <= openTP) hitTP = true;
+            if (high >= openSL) hitSL = true;
+          }
+
+          const maxHoldReached = i - openIdx >= 10; // Max hold 10 candles
+
+          if (hitTP || hitSL || maxHoldReached) {
+            const exit = hitTP ? openTP : hitSL ? openSL : close;
+            const won = hitTP || (!hitSL && (exit - openEntry) * (openSide === "BUY" ? 1 : -1) > 0);
+            const pnl = won ? stake * 0.85 : -stake;
+            balance += pnl;
+            const cumPnl = balance - startingBalance;
+
+            const obZone = openAnalysis?.activeOB
+              ? `${openAnalysis.activeOB.kind} [${openAnalysis.activeOB.bottom.toFixed(4)}, ${openAnalysis.activeOB.top.toFixed(4)}]`
+              : null;
+            const fvgZone = openAnalysis?.activeFVG
+              ? `${openAnalysis.activeFVG.kind} [${openAnalysis.activeFVG.bottom.toFixed(4)}, ${openAnalysis.activeFVG.top.toFixed(4)}]`
+              : null;
+
+            localTrades.push({
+              t: candles[openIdx].epoch,
+              exitT: c.epoch,
+              side: openSide,
+              entry: openEntry,
+              exit,
+              pnl,
+              cumPnl,
+              confidence: openAnalysis?.confidence ?? 0,
+              trend: openAnalysis?.trend ?? "up",
+              ema20: openAnalysis?.ema20 ?? 0,
+              ema50: openAnalysis?.ema50 ?? 0,
+              rsi14: openAnalysis?.rsi14 ?? 50,
+              atr14: openAnalysis?.atr14 ?? 0,
+              obZone,
+              fvgZone,
+              barsHeld: i - openIdx,
+              outcome: won ? "WIN" : "LOSS",
+            });
+            curve.push({ t: c.epoch, equity: balance });
+
+            if (balance > peak) peak = balance;
+            const dd = ((peak - balance) / peak) * 100;
+            ddCurve.push({ t: c.epoch, dd: -dd });
+
+            // Streak & Cooldown update
+            if (!won) {
+              currentStreakLosses++;
+            } else {
+              currentStreakLosses = 0;
+            }
+
+            openIdx = null;
+            openSide = null;
+            openAnalysis = null;
+            cooldownCandles = 5; // 5 candles cooldown after completed trade
+          }
         }
 
-        if (i % 20 === 0) {
+        // 3. Evaluate potential new entries (if no open trade & streak protect allows)
+        if (openIdx === null && currentStreakLosses < 3 && cooldownCandles === 0) {
+          const window = candles.slice(Math.max(0, i - 60), i + 1);
+          const a = analyze(window);
+
+          if (a.decision !== "WAIT" && a.confidence >= minConfidence) {
+            openIdx = i;
+            openSide = a.decision === "BUY" ? "BUY" : "SELL";
+            openEntry = c.close;
+            openSL = a.sl ?? (openSide === "BUY" ? openEntry - 1.0 * a.atr14 : openEntry + 1.0 * a.atr14);
+            openTP = a.tp ?? (openSide === "BUY" ? openEntry + 1.5 * a.atr14 : openEntry - 1.5 * a.atr14);
+            openAnalysis = a;
+          }
+        }
+
+        // 4. Recovery after 3 consecutive losses: wait for structure change / new setup
+        if (currentStreakLosses >= 3 && openIdx === null) {
+          const window = candles.slice(Math.max(0, i - 60), i + 1);
+          const a = analyze(window);
+          if (a.bos || a.choch) {
+            // Reset streak once structure break occurs
+            currentStreakLosses = 0;
+          }
+        }
+
+        if (i % 25 === 0) {
           setProgress(Math.round(((i - 60) / (candles.length - 65)) * 100));
           await new Promise((r) => setTimeout(r, 0));
         }
@@ -290,7 +357,7 @@ function BacktestPage() {
       await fnSave({
         data: {
           symbol,
-          timeframe: "1m",
+          timeframe,
           start_epoch: candles[60].epoch,
           end_epoch: candles.at(-1)!.epoch,
           starting_balance: startingBalance,
@@ -304,7 +371,7 @@ function BacktestPage() {
         },
       });
       toast.success(
-        `Backtest done · ${localTrades.length} trades · ${m.winRate.toFixed(0)}% wins · PF ${m.profitFactor === Infinity ? "∞" : m.profitFactor.toFixed(2)}`
+        `Backtest done · ${localTrades.length} trades · ${m.winRate.toFixed(1)}% wins · PF ${m.profitFactor === Infinity ? "∞" : m.profitFactor.toFixed(2)}`
       );
       fnList().then(setHistory).catch(() => {});
     } catch (e: any) {
@@ -346,14 +413,14 @@ function BacktestPage() {
         <header>
           <h1 className="text-2xl font-semibold tracking-tight">Backtest Engine</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Replay the OB+FVG strategy on historical Deriv candles with comprehensive analytics.
-            No Deriv account required — uses the public candle feed.
+            Replay the OB+FVG strategy on historical Deriv candles with walk-forward broker simulation.
+            Adjust parameters to optimize profit factor and drawdown.
           </p>
         </header>
 
         {/* ── Config Panel ── */}
         <div className="glass rounded-xl p-5 space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
             <div>
               <Label className="text-xs">Symbol</Label>
               <select
@@ -367,7 +434,19 @@ function BacktestPage() {
               </select>
             </div>
             <div>
-              <Label className="text-xs">Candles (1m)</Label>
+              <Label className="text-xs">Timeframe</Label>
+              <select
+                className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
+                value={timeframe}
+                onChange={(e) => setTimeframe(e.target.value)}
+              >
+                {TIMEFRAMES.map((t) => (
+                  <option key={t.code} value={t.code}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Candles Count</Label>
               <Input
                 type="number" min={120} max={5000}
                 value={count} onChange={(e) => setCount(Number(e.target.value))}
@@ -408,56 +487,49 @@ function BacktestPage() {
           <>
             {/* Key metrics grid */}
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              <Stat icon={<Target className="size-3.5" />} label="Total Trades" value={metrics.totalTrades} />
-              <Stat icon={<TrendingUp className="size-3.5" />} label="Win Rate" value={`${metrics.winRate.toFixed(1)}%`} tone={metrics.winRate >= 50 ? "bull" : "bear"} />
-              <Stat icon={<TrendingDown className="size-3.5" />} label="Loss Rate" value={`${metrics.lossRate.toFixed(1)}%`} tone="bear" />
-              <Stat
+              <MiniIndicator icon={<Target className="size-3.5" />} label="Total Trades" value={metrics.totalTrades} />
+              <MiniIndicator icon={<TrendingUp className="size-3.5" />} label="Win Rate" value={`${metrics.winRate.toFixed(1)}%`} tone={metrics.winRate >= 58 ? "bull" : "bear"} />
+              <MiniIndicator icon={<TrendingDown className="size-3.5" />} label="Loss Rate" value={`${metrics.lossRate.toFixed(1)}%`} tone="bear" />
+              <MiniIndicator
                 icon={<Zap className="size-3.5" />}
                 label="Total P&L"
                 value={`${metrics.totalPnl >= 0 ? "+" : ""}$${metrics.totalPnl.toFixed(2)}`}
                 tone={metrics.totalPnl >= 0 ? "bull" : "bear"}
               />
-              <Stat
+              <MiniIndicator
                 icon={<BarChart3 className="size-3.5" />}
                 label="Final Equity"
                 value={`$${metrics.finalEquity.toFixed(2)}`}
                 tone={metrics.finalEquity >= startingBalance ? "bull" : "bear"}
               />
-              <Stat
+              <MiniIndicator
                 icon={<Shield className="size-3.5" />}
                 label="Profit Factor"
                 value={metrics.profitFactor === Infinity ? "∞" : metrics.profitFactor.toFixed(2)}
-                tone={metrics.profitFactor >= 1 ? "bull" : "bear"}
+                tone={metrics.profitFactor >= 1.4 ? "bull" : "bear"}
               />
             </div>
 
             {/* Secondary metrics */}
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              <Stat
+              <MiniIndicator
                 icon={<AlertTriangle className="size-3.5" />}
                 label="Max Drawdown"
                 value={`$${metrics.maxDrawdown.toFixed(2)} (${metrics.maxDrawdownPct.toFixed(1)}%)`}
-                tone="bear"
+                tone={metrics.maxDrawdownPct > 15 ? "bear" : "bull"}
               />
-              <Stat icon={<Award className="size-3.5" />} label="Best Trade" value={`+$${metrics.bestTrade.toFixed(2)}`} tone="bull" />
-              <Stat icon={<Flame className="size-3.5" />} label="Worst Trade" value={`$${metrics.worstTrade.toFixed(2)}`} tone="bear" />
-              <Stat icon={<TrendingUp className="size-3.5" />} label="Avg Win" value={`+$${metrics.avgWin.toFixed(2)}`} tone="bull" />
-              <Stat icon={<TrendingDown className="size-3.5" />} label="Avg Loss" value={`-$${metrics.avgLoss.toFixed(2)}`} tone="bear" />
+              <MiniIndicator icon={<Award className="size-3.5" />} label="Best Trade" value={`+$${metrics.bestTrade.toFixed(2)}`} tone="bull" />
+              <MiniIndicator icon={<Flame className="size-3.5" />} label="Worst Trade" value={`$${metrics.worstTrade.toFixed(2)}`} tone="bear" />
+              <MiniIndicator icon={<TrendingUp className="size-3.5" />} label="Avg Win" value={`+$${metrics.avgWin.toFixed(2)}`} tone="bull" />
+              <MiniIndicator icon={<TrendingDown className="size-3.5" />} label="Avg Loss" value={`-$${metrics.avgLoss.toFixed(2)}`} tone="bear" />
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              <Stat label="Risk/Reward" value={metrics.riskRewardRatio.toFixed(2)} tone={metrics.riskRewardRatio >= 1 ? "bull" : "bear"} />
-              <Stat label="Sharpe Ratio" value={metrics.sharpeRatio.toFixed(2)} tone={metrics.sharpeRatio >= 1 ? "bull" : "bear"} />
-              <Stat label="Expectancy" value={`$${metrics.expectancy.toFixed(2)}/trade`} tone={metrics.expectancy >= 0 ? "bull" : "bear"} />
-              <Stat label="Max Win Streak" value={`${metrics.maxConsecutiveWins}`} tone="bull" />
-              <Stat label="Max Loss Streak" value={`${metrics.maxConsecutiveLosses}`} tone="bear" />
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Stat label="Gross Profit" value={`$${metrics.grossProfit.toFixed(2)}`} tone="bull" />
-              <Stat label="Gross Loss" value={`$${metrics.grossLoss.toFixed(2)}`} tone="bear" />
-              <Stat label="Avg Bars Held" value={metrics.avgBarsHeld.toFixed(1)} />
-              <Stat label="Wins / Losses" value={`${metrics.wins}W / ${metrics.losses}L`} />
+              <MiniIndicator label="Risk/Reward" value={`1:${metrics.riskRewardRatio.toFixed(2)}`} tone={metrics.riskRewardRatio >= 1.3 ? "bull" : "bear"} />
+              <MiniIndicator label="Sharpe Ratio" value={metrics.sharpeRatio.toFixed(2)} tone={metrics.sharpeRatio >= 1.0 ? "bull" : "bear"} />
+              <MiniIndicator label="Expectancy" value={`${metrics.expectancy >= 0 ? "+" : ""}$${metrics.expectancy.toFixed(2)}/trade`} tone={metrics.expectancy >= 0.2 ? "bull" : "bear"} />
+              <MiniIndicator label="Max Win Streak" value={`${metrics.maxConsecutiveWins}`} tone="bull" />
+              <MiniIndicator label="Max Loss Streak" value={`${metrics.maxConsecutiveLosses}`} tone="bear" />
             </div>
 
             {/* Charts */}
@@ -465,7 +537,7 @@ function BacktestPage() {
               {/* Equity curve */}
               <div className="glass rounded-xl p-4">
                 <h3 className="text-xs uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
-                  <TrendingUp className="size-3" /> Equity Curve
+                  <TrendingUp className="size-3" /> Equity Curve ($)
                 </h3>
                 <div className="h-[280px]">
                   <ResponsiveContainer width="100%" height="100%">
@@ -514,7 +586,7 @@ function BacktestPage() {
                         tickFormatter={(t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                         stroke="var(--color-muted-foreground)" fontSize={10}
                       />
-                      <YAxis stroke="var(--color-muted-foreground)" fontSize={10} tickFormatter={(v) => `${v.toFixed(0)}%`} />
+                      <YAxis stroke="var(--color-muted-foreground)" fontSize={10} tickFormatter={(v) => `${v.toFixed(1)}%`} />
                       <Tooltip
                         contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", fontSize: 11, borderRadius: 8 }}
                         formatter={(v: number) => [`${v.toFixed(2)}%`, "Drawdown"]}
@@ -531,7 +603,7 @@ function BacktestPage() {
             {pnlBins.length > 0 && (
               <div className="glass rounded-xl p-4">
                 <h3 className="text-xs uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
-                  <BarChart3 className="size-3" /> P&L Distribution
+                  <BarChart3 className="size-3" /> Trade P&L Bin Distribution
                 </h3>
                 <div className="h-[220px]">
                   <ResponsiveContainer width="100%" height="100%">
@@ -630,8 +702,8 @@ function BacktestPage() {
                           <td className="px-3 py-1.5 text-[10px]">{t.obZone ?? "—"}</td>
                           <td className="px-3 py-1.5 text-[10px]">{t.fvgZone ?? "—"}</td>
                           <td className="px-3 py-1.5">
-                            <Badge variant={t.pnl > 0 ? "default" : "destructive"} className="text-[10px] h-4 px-1.5">
-                              {t.pnl > 0 ? "WIN" : "LOSS"}
+                            <Badge variant={t.outcome === "WIN" ? "default" : "destructive"} className="text-[10px] h-4 px-1.5">
+                              {t.outcome}
                             </Badge>
                           </td>
                         </tr>
@@ -660,6 +732,7 @@ function BacktestPage() {
                   <div key={h.id} className="flex items-center justify-between text-xs py-2 px-3 rounded-lg hover:bg-card/30 transition-colors">
                     <div className="flex items-center gap-2">
                       <Badge variant="outline">{h.symbol}</Badge>
+                      <Badge variant="outline">{h.timeframe}</Badge>
                       <span className="text-muted-foreground">
                         {new Date(h.created_at).toLocaleString()}
                       </span>
@@ -685,7 +758,7 @@ function BacktestPage() {
   );
 }
 
-function Stat({
+function MiniIndicator({
   label,
   value,
   tone,

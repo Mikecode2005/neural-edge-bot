@@ -24,6 +24,7 @@ import {
   Zap,
   Eye,
   EyeOff,
+  Trash2,
 } from "lucide-react";
 
 import { AppNav } from "@/components/AppNav";
@@ -33,11 +34,10 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Toaster } from "@/components/ui/sonner";
 
-import { startBot, stopBot, listBots, tickBot, updateBotBalance } from "@/lib/bots/bots.functions";
+import { startBot, stopBot, listBots, tickBot, updateBotBalance, resetBotStats } from "@/lib/bots/bots.functions";
 import { getActiveDerivToken } from "@/lib/deriv/connections.functions";
 import { checkRisk, logTradeOpen, logTradeClose } from "@/lib/trading/execute.functions";
-import { recordOutcome } from "@/lib/ai/qwen.functions";
-import { analyzeMarketWithHfRouter } from "@/lib/ai/hf-router";
+import { recordOutcome, analyzeMarket } from "@/lib/ai/qwen.functions";
 import { getDerivWS } from "@/lib/deriv/ws";
 import { analyze } from "@/lib/ob-fvg";
 import { DERIV_SYMBOLS } from "@/lib/deriv-ws";
@@ -64,11 +64,10 @@ interface BotRow {
   account_balance?: number;
 }
 
-// Activity log entry — one per tick
 interface ActivityEntry {
   id: string;
   timestamp: number;
-  action: "SCAN" | "SKIP" | "ENTRY" | "EXIT" | "ERROR";
+  action: "SCAN" | "SKIP" | "ENTRY" | "EXIT" | "ERROR" | "PROTECTION";
   symbol: string;
   direction: "CALL" | "PUT" | "NONE" | "—";
   confidence: number;
@@ -89,6 +88,18 @@ interface ActivityEntry {
   atr14: number | null;
 }
 
+// Track active simulated trades in memory: mapped by botId -> trade details
+interface SimulatedTrade {
+  tradeId: string;
+  direction: "CALL" | "PUT";
+  entryPrice: number;
+  takeProfit: number;
+  stopLoss: number;
+  stake: number;
+  candlesHeld: number;
+  openedAt: number;
+}
+
 function BotsPage() {
   const fnStart = useServerFn(startBot);
   const fnStop = useServerFn(stopBot);
@@ -100,11 +111,13 @@ function BotsPage() {
   const fnLogClose = useServerFn(logTradeClose);
   const fnRecordOutcome = useServerFn(recordOutcome);
   const fnUpdateBalance = useServerFn(updateBotBalance);
+  const fnResetStats = useServerFn(resetBotStats);
+  const fnAnalyzeMarket = useServerFn(analyzeMarket);
 
   const [bots, setBots] = useState<BotRow[]>([]);
   const [form, setForm] = useState({
     symbol: "R_10",
-    account_type: "demo" as "demo" | "real",
+    account_type: "simulated" as "simulated" | "demo" | "real",
     interval_seconds: 60,
     min_confidence: 0.7,
     max_stake_per_trade: 1,
@@ -118,6 +131,9 @@ function BotsPage() {
   const [newBalance, setNewBalance] = useState("");
   const [showMt5Guide, setShowMt5Guide] = useState(false);
 
+  // Simulated trades in-memory tracker
+  const [simulatedTrades, setSimulatedTrades] = useState<Map<string, SimulatedTrade>>(new Map());
+
   const loopsRef = useRef<Map<string, number>>(new Map());
   const logIdRef = useRef(0);
 
@@ -126,7 +142,7 @@ function BotsPage() {
     setActivityLogs((prev) => {
       const next = new Map(prev);
       const existing = next.get(botId) ?? [];
-      next.set(botId, [{ ...entry, id }, ...existing].slice(0, 200)); // keep last 200
+      next.set(botId, [{ ...entry, id }, ...existing].slice(0, 100)); // cap at 100 to prevent memory bloat
       return next;
     });
   }, []);
@@ -139,8 +155,27 @@ function BotsPage() {
     };
   }, []);
 
+  const clearActivityLog = (botId: string) => {
+    setActivityLogs((prev) => {
+      const next = new Map(prev);
+      next.delete(botId);
+      return next;
+    });
+    toast.message("Activity log cleared");
+  };
+
+  const handleResetStats = async (botId: string) => {
+    if (!confirm("Are you sure you want to reset trade count and P&L statistics for this bot?")) return;
+    await fnResetStats({ data: { id: botId } });
+    toast.success("Statistics reset successfully");
+    load();
+  };
+
   const runOneTick = async (bot: BotRow) => {
     const ts = Date.now();
+    const isSimulated = bot.market_mode === "simulated";
+    const currentBalance = (bot.account_balance ?? 1000) + (bot.total_pnl ?? 0);
+
     try {
       const ws = getDerivWS();
       const candles = await ws.fetchCandles(bot.symbol, 60, 200);
@@ -158,6 +193,76 @@ function BotsPage() {
       const analysis = analyze(candles);
       const price = candles.at(-1)!.close;
 
+      // ── SIMULATED TRADE SETTLEMENT ENGINE ──
+      if (isSimulated && simulatedTrades.has(bot.id)) {
+        const activeSim = simulatedTrades.get(bot.id)!;
+        const exitPrice = price;
+        const dirSign = activeSim.direction === "CALL" ? 1 : -1;
+        const hitTP = activeSim.direction === "CALL" ? exitPrice >= activeSim.takeProfit : exitPrice <= activeSim.takeProfit;
+        const hitSL = activeSim.direction === "CALL" ? exitPrice <= activeSim.stopLoss : exitPrice >= activeSim.stopLoss;
+        const maxBarsReached = activeSim.candlesHeld >= 5; // typical hold limit
+
+        if (hitTP || hitSL || maxBarsReached) {
+          const won = hitTP || (!hitSL && (exitPrice - activeSim.entryPrice) * dirSign > 0);
+          const pnl = won ? activeSim.stake * 0.85 : -activeSim.stake;
+          const outcome = won ? "win" : "loss";
+
+          addLog(bot.id, {
+            timestamp: Date.now(), action: "EXIT", symbol: bot.symbol,
+            direction: activeSim.direction, confidence: 0,
+            entryPrice: activeSim.entryPrice, stake: activeSim.stake,
+            stopLoss: activeSim.stopLoss, takeProfit: activeSim.takeProfit,
+            duration: `${activeSim.candlesHeld}m`,
+            pnl,
+            reasoning: `Simulated Exit: ${outcome.toUpperCase()} at ${exitPrice.toFixed(4)}. SL/TP boundary touched. P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
+            obZone: null, fvgZone: null,
+            riskCheck: `Simulated settlement`,
+            trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
+            rsi14: analysis.rsi14, atr14: analysis.atr14,
+          });
+
+          await fnLogClose({ data: { trade_id: activeSim.tradeId, exit_price: exitPrice, pnl, outcome } });
+          await fnTick({ data: { id: bot.id, executed: true, pnl_delta: pnl } });
+          
+          setSimulatedTrades((prev) => {
+            const next = new Map(prev);
+            next.delete(bot.id);
+            return next;
+          });
+          load();
+          return;
+        } else {
+          // Increment bar count held
+          setSimulatedTrades((prev) => {
+            const next = new Map(prev);
+            const t = next.get(bot.id);
+            if (t) t.candlesHeld += 1;
+            return next;
+          });
+        }
+      }
+
+      // Check consecutive loss pause protection
+      const logs = activityLogs.get(bot.id) ?? [];
+      const exitTrades = logs.filter((l) => l.action === "EXIT");
+      if (exitTrades.length >= 3) {
+        const lastThreeLosing = exitTrades.slice(0, 3).every((t) => (t.pnl ?? 0) < 0);
+        if (lastThreeLosing && bot.status === "running") {
+          addLog(bot.id, {
+            timestamp: ts, action: "PROTECTION", symbol: bot.symbol, direction: "—",
+            confidence: 0, entryPrice: null, stake: null, stopLoss: null,
+            takeProfit: null, duration: null, pnl: null,
+            reasoning: "Consecutive loss protection activated (3 losses). Pausing bot.",
+            obZone: null, fvgZone: null, riskCheck: "Active",
+            trend: null, ema20: null, ema50: null, rsi14: null, atr14: null,
+          });
+          await fnStop({ data: { id: bot.id } });
+          toast.warning("Bot paused due to consecutive loss protection");
+          load();
+          return;
+        }
+      }
+
       // Build OB/FVG info
       const obInfo = analysis.activeOB
         ? `${analysis.activeOB.kind} OB [${analysis.activeOB.bottom.toFixed(4)}, ${analysis.activeOB.top.toFixed(4)}]`
@@ -166,13 +271,17 @@ function BotsPage() {
         ? `${analysis.activeFVG.kind} FVG [${analysis.activeFVG.bottom.toFixed(4)}, ${analysis.activeFVG.top.toFixed(4)}]`
         : "None";
 
-      const ai = await analyzeMarketWithHfRouter({
-        symbol: bot.symbol,
-        timeframe: bot.timeframe,
-        candles: candles.slice(-60),
-        analysis,
-        currentPrice: price,
-        balance: bot.account_balance ?? 1000,
+      // Call server-side Qwen which retrieves lessons and classifies setup
+      const ai = await fnAnalyzeMarket({
+        data: {
+          symbol: bot.symbol,
+          timeframe: bot.timeframe,
+          candles: candles.slice(-60),
+          ob_zones: [],
+          fvg_zones: [],
+          current_price: price,
+          balance: currentBalance,
+        }
       });
 
       if (ai.direction === "NONE" || ai.confidence < bot.min_confidence) {
@@ -193,10 +302,9 @@ function BotsPage() {
         return;
       }
 
-      // Risk + execute
       const stake = Math.max(0.35, Math.min(ai.stake ?? 1, bot.max_stake_per_trade));
       const risk = (await fnCheckRisk({
-        data: { proposed_stake: stake, account_type: bot.account_type },
+        data: { proposed_stake: stake, account_type: "demo" },
       })) as { ok: boolean; reason?: string };
 
       if (!risk.ok) {
@@ -217,100 +325,151 @@ function BotsPage() {
         return;
       }
 
-      const tok = (await fnGetToken()) as { token: string; currency: string; loginid: string; account_type: string } | null;
-      if (!tok || tok.account_type !== bot.account_type) {
-        const err = `Active Deriv account not ${bot.account_type}`;
+      // ── EXECUTION PATH ──
+      if (isSimulated) {
+        // Simulated execution (Paper trade offline)
+        const mockContractId = `sim-${Date.now()}`;
+        const finalSL = ai.stop_loss ?? (ai.direction === "CALL" ? price - 1.0 * analysis.atr14 : price + 1.0 * analysis.atr14);
+        const finalTP = ai.take_profit ?? (ai.direction === "CALL" ? price + 1.5 * analysis.atr14 : price - 1.5 * analysis.atr14);
+
         addLog(bot.id, {
-          timestamp: ts, action: "ERROR", symbol: bot.symbol,
+          timestamp: ts, action: "ENTRY", symbol: bot.symbol,
           direction: ai.direction, confidence: ai.confidence,
-          entryPrice: price, stake, stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-          duration: null, pnl: null, reasoning: err,
-          obZone: obInfo, fvgZone: fvgInfo, riskCheck: "Token mismatch",
+          entryPrice: price, stake,
+          stopLoss: finalSL, takeProfit: finalTP,
+          duration: "Simulated", pnl: null,
+          reasoning: ai.reasoning || "Paper trade entry",
+          obZone: obInfo, fvgZone: fvgInfo,
+          riskCheck: `✅ Passed (Simulated $${stake.toFixed(2)})`,
           trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
           rsi14: analysis.rsi14, atr14: analysis.atr14,
         });
-        await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0, error: err } });
-        return;
-      }
 
-      await ws.authorize(tok.token);
-      const prop = await ws.proposal({
-        symbol: bot.symbol,
-        amount: stake,
-        contract_type: ai.direction,
-        duration: ai.duration && ai.duration > 0 ? ai.duration : 5,
-        duration_unit: (ai.duration_unit as "t" | "s" | "m" | "h") || "t",
-        basis: "stake",
-        currency: tok.currency,
-      });
-      const buy = await ws.buy(prop.proposal.id, prop.proposal.ask_price);
-      const contractId = String(buy.buy.contract_id);
+        const tradeRow = (await fnLogOpen({
+          data: {
+            decision_id: ai.decision_id,
+            symbol: bot.symbol,
+            side: ai.direction,
+            stake,
+            contract_id: `simulated-${mockContractId}`,
+            buy_price: price,
+            payout: stake * 1.85,
+            take_profit: finalTP,
+            stop_loss: finalSL,
+            account_type: "demo",
+          },
+        })) as { id: string };
 
-      // Log ENTRY
-      addLog(bot.id, {
-        timestamp: ts, action: "ENTRY", symbol: bot.symbol,
-        direction: ai.direction, confidence: ai.confidence,
-        entryPrice: buy.buy.buy_price, stake,
-        stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-        duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : "5t",
-        pnl: null,
-        reasoning: ai.reasoning || "AI approved trade",
-        obZone: obInfo, fvgZone: fvgInfo,
-        riskCheck: `✅ Passed (stake $${stake.toFixed(2)})`,
-        trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-        rsi14: analysis.rsi14, atr14: analysis.atr14,
-      });
+        setSimulatedTrades((prev) => {
+          const next = new Map(prev);
+          next.set(bot.id, {
+            tradeId: tradeRow.id,
+            direction: ai.direction as "CALL" | "PUT",
+            entryPrice: price,
+            takeProfit: finalTP,
+            stopLoss: finalSL,
+            stake,
+            candlesHeld: 0,
+            openedAt: ts,
+          });
+          return next;
+        });
 
-      const tradeRow = (await fnLogOpen({
-        data: {
-          decision_id: ai.decision_id,
-          symbol: bot.symbol,
-          side: ai.direction,
-          stake,
-          contract_id: contractId,
-          buy_price: buy.buy.buy_price,
-          payout: buy.buy.payout,
-          take_profit: ai.take_profit,
-          stop_loss: ai.stop_loss,
-          account_type: bot.account_type,
-        },
-      })) as { id: string };
-
-      // Settle async
-      const unsub = await ws.subscribeOpenContract(Number(contractId), async (msg) => {
-        const c = msg.proposal_open_contract;
-        if (!c) return;
-        if (c.is_sold || c.status === "sold" || c.status === "won" || c.status === "lost") {
-          unsub();
-          const pnl = Number(c.profit ?? 0);
-          const exit = Number(c.exit_tick ?? c.sell_price ?? 0);
-          const outcome = pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven";
-
-          // Log EXIT
+      } else {
+        // Live Deriv Execution (Requires login token)
+        const tok = (await fnGetToken()) as { token: string; currency: string; loginid: string; account_type: string } | null;
+        if (!tok || tok.account_type !== bot.account_type) {
+          const err = `Active Deriv account not ${bot.account_type}`;
           addLog(bot.id, {
-            timestamp: Date.now(), action: "EXIT", symbol: bot.symbol,
+            timestamp: ts, action: "ERROR", symbol: bot.symbol,
             direction: ai.direction, confidence: ai.confidence,
-            entryPrice: buy.buy.buy_price, stake,
-            stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-            duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : "5t",
-            pnl,
-            reasoning: `Contract ${outcome.toUpperCase()} — exit at ${exit.toFixed(4)}, P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
-            obZone: obInfo, fvgZone: fvgInfo,
-            riskCheck: `Settled: ${outcome}`,
+            entryPrice: price, stake, stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
+            duration: null, pnl: null, reasoning: err,
+            obZone: obInfo, fvgZone: fvgInfo, riskCheck: "Token mismatch",
             trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
             rsi14: analysis.rsi14, atr14: analysis.atr14,
           });
-
-          await fnLogClose({ data: { trade_id: tradeRow.id, exit_price: exit, pnl, outcome } });
-          if (ai.decision_id) {
-            await fnRecordOutcome({
-              data: { decision_id: ai.decision_id, outcome, pnl, contract_id: contractId },
-            });
-          }
-          await fnTick({ data: { id: bot.id, executed: true, pnl_delta: pnl } });
-          load();
+          await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0, error: err } });
+          return;
         }
-      });
+
+        await ws.authorize(tok.token);
+        const prop = await ws.proposal({
+          symbol: bot.symbol,
+          amount: stake,
+          contract_type: ai.direction,
+          duration: ai.duration && ai.duration > 0 ? ai.duration : 5,
+          duration_unit: (ai.duration_unit as "t" | "s" | "m" | "h") || "t",
+          basis: "stake",
+          currency: tok.currency,
+        });
+        const buy = await ws.buy(prop.proposal.id, prop.proposal.ask_price);
+        const contractId = String(buy.buy.contract_id);
+
+        addLog(bot.id, {
+          timestamp: ts, action: "ENTRY", symbol: bot.symbol,
+          direction: ai.direction, confidence: ai.confidence,
+          entryPrice: buy.buy.buy_price, stake,
+          stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
+          duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : "5t",
+          pnl: null,
+          reasoning: ai.reasoning || "AI approved trade",
+          obZone: obInfo, fvgZone: fvgInfo,
+          riskCheck: `✅ Passed (stake $${stake.toFixed(2)})`,
+          trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
+          rsi14: analysis.rsi14, atr14: analysis.atr14,
+        });
+
+        const tradeRow = (await fnLogOpen({
+          data: {
+            decision_id: ai.decision_id,
+            symbol: bot.symbol,
+            side: ai.direction,
+            stake,
+            contract_id: contractId,
+            buy_price: buy.buy.buy_price,
+            payout: buy.buy.payout,
+            take_profit: ai.take_profit,
+            stop_loss: ai.stop_loss,
+            account_type: bot.account_type,
+          },
+        })) as { id: string };
+
+        // Settle async via WebSocket open contract stream
+        const unsub = await ws.subscribeOpenContract(Number(contractId), async (msg) => {
+          const c = msg.proposal_open_contract;
+          if (!c) return;
+          if (c.is_sold || c.status === "sold" || c.status === "won" || c.status === "lost") {
+            unsub();
+            const pnl = Number(c.profit ?? 0);
+            const exit = Number(c.exit_tick ?? c.sell_price ?? 0);
+            const outcome = pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven";
+
+            addLog(bot.id, {
+              timestamp: Date.now(), action: "EXIT", symbol: bot.symbol,
+              direction: ai.direction, confidence: ai.confidence,
+              entryPrice: buy.buy.buy_price, stake,
+              stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
+              duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : "5t",
+              pnl,
+              reasoning: `Contract ${outcome.toUpperCase()} — exit at ${exit.toFixed(4)}, P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
+              obZone: obInfo, fvgZone: fvgInfo,
+              riskCheck: `Settled: ${outcome}`,
+              trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
+              rsi14: analysis.rsi14, atr14: analysis.atr14,
+            });
+
+            await fnLogClose({ data: { trade_id: tradeRow.id, exit_price: exit, pnl, outcome } });
+            if (ai.decision_id) {
+              await fnRecordOutcome({
+                data: { decision_id: ai.decision_id, outcome, pnl, contract_id: contractId },
+              });
+            }
+            await fnTick({ data: { id: bot.id, executed: true, pnl_delta: pnl } });
+            load();
+          }
+        });
+      }
     } catch (e: any) {
       addLog(bot.id, {
         timestamp: ts, action: "ERROR", symbol: bot.symbol,
@@ -348,6 +507,7 @@ function BotsPage() {
   }, [bots]);
 
   const onCreate = async () => {
+    const isSimulated = form.account_type === "simulated";
     if (form.account_type === "real") {
       const ok = confirm("Start an autonomous bot trading REAL money? This will place live trades.");
       if (!ok) return;
@@ -356,8 +516,8 @@ function BotsPage() {
       data: {
         symbol: form.symbol,
         timeframe: "1m",
-        account_type: form.account_type,
-        market_mode: "synthetic",
+        account_type: isSimulated ? "demo" : form.account_type, // save as demo in DB if simulated to satisfy constraint
+        market_mode: isSimulated ? "simulated" : "synthetic",
         interval_seconds: form.interval_seconds,
         min_confidence: form.min_confidence,
         max_stake_per_trade: form.max_stake_per_trade,
@@ -433,8 +593,8 @@ function BotsPage() {
         <header>
           <h1 className="text-2xl font-semibold tracking-tight">Autonomous Bots</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Each bot polls the market at its interval, asks the AI, and trades when confidence ≥
-            threshold. The loop runs while this tab is open.
+            Each bot polls the market at its interval, calls the Qwen AI models (with lessons recalled from memory),
+            and trades when confidence ≥ threshold. The loop runs while this tab is open.
           </p>
         </header>
 
@@ -459,14 +619,15 @@ function BotsPage() {
               </select>
             </div>
             <div>
-              <Label className="text-xs">Account</Label>
+              <Label className="text-xs">Account / Execution Mode</Label>
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.account_type}
                 onChange={(e) => setForm({ ...form, account_type: e.target.value as any })}
               >
-                <option value="demo">Demo</option>
-                <option value="real">Real</option>
+                <option value="simulated">Local Simulated Demo (Paper trade)</option>
+                <option value="demo">Deriv Virtual Demo Account</option>
+                <option value="real">Deriv Live Real Account</option>
               </select>
             </div>
             <div>
@@ -525,6 +686,7 @@ function BotsPage() {
             const isExpanded = expandedBots.has(b.id);
             const logs = activityLogs.get(b.id) ?? [];
             const currentBalance = (b.account_balance ?? 1000) + (b.total_pnl ?? 0);
+            const isSimulated = b.market_mode === "simulated";
 
             return (
               <div key={b.id} className="glass rounded-xl overflow-hidden">
@@ -537,12 +699,18 @@ function BotsPage() {
                           className={`size-4 ${b.status === "running" ? "text-primary animate-pulse" : "text-muted-foreground"}`}
                         />
                         <span className="font-semibold text-base">{b.symbol}</span>
-                        <Badge variant={b.account_type === "demo" ? "secondary" : "destructive"}>
-                          {b.account_type}
-                        </Badge>
+                        {isSimulated ? (
+                          <Badge className="bg-primary/20 text-primary border-primary/30">
+                            LOCAL SIMULATED
+                          </Badge>
+                        ) : (
+                          <Badge variant={b.account_type === "demo" ? "secondary" : "destructive"}>
+                            DERIV {b.account_type.toUpperCase()}
+                          </Badge>
+                        )}
                         <Badge variant="outline">{b.status}</Badge>
                         {b.status === "running" && (
-                          <span className="text-xs text-primary">● Live</span>
+                          <span className="text-xs text-primary">● Live Loop Running</span>
                         )}
                       </div>
 
@@ -598,11 +766,16 @@ function BotsPage() {
 
                     {/* Actions */}
                     <div className="flex flex-col gap-2 items-end shrink-0">
-                      {b.status === "running" && (
-                        <Button size="sm" variant="destructive" onClick={() => onStop(b.id)} className="gap-1.5">
-                          <Square className="size-3.5" /> Stop
+                      <div className="flex items-center gap-1.5">
+                        {b.status === "running" && (
+                          <Button size="sm" variant="destructive" onClick={() => onStop(b.id)} className="gap-1.5 h-8">
+                            <Square className="size-3.5" /> Stop Bot
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" className="h-8 text-xs gap-1" onClick={() => handleResetStats(b.id)}>
+                          <RefreshCw className="size-3" /> Reset Stats
                         </Button>
-                      )}
+                      </div>
 
                       {/* Balance edit */}
                       {editingBalance === b.id ? (
@@ -636,20 +809,33 @@ function BotsPage() {
                         </Button>
                       )}
 
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="gap-1 text-xs h-7"
-                        onClick={() => toggleExpand(b.id)}
-                      >
-                        {isExpanded ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
-                        {isExpanded ? "Hide Activity" : "Show Activity"}
+                      <div className="flex items-center gap-1.5">
                         {logs.length > 0 && (
-                          <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">
-                            {logs.length}
-                          </Badge>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="gap-1 text-xs h-7 text-bear/80 hover:text-bear"
+                            onClick={() => clearActivityLog(b.id)}
+                          >
+                            <Trash2 className="size-3" /> Clear Logs
+                          </Button>
                         )}
-                      </Button>
+
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="gap-1 text-xs h-7"
+                          onClick={() => toggleExpand(b.id)}
+                        >
+                          {isExpanded ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                          {isExpanded ? "Hide Activity" : "Show Activity"}
+                          {logs.length > 0 && (
+                            <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">
+                              {logs.length}
+                            </Badge>
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -660,7 +846,7 @@ function BotsPage() {
                     <div className="p-3 bg-card/30">
                       <div className="flex items-center justify-between mb-2">
                         <h4 className="text-xs font-semibold flex items-center gap-1.5">
-                          <Terminal className="size-3 text-primary" /> Live Activity Feed
+                          <Terminal className="size-3 text-primary" /> Live Activity Feed (Calibrated Setup Classification)
                         </h4>
                         <span className="text-[10px] text-muted-foreground">
                           {logs.length} entries (session only)
@@ -717,7 +903,7 @@ function BotsPage() {
                 </h3>
                 <div className="ml-7 text-xs text-muted-foreground space-y-1.5 leading-relaxed">
                   <p>1. Log into <a href="https://app.deriv.com" target="_blank" rel="noopener noreferrer" className="text-primary underline">app.deriv.com</a></p>
-                  <p>2. Go to <strong>Trader's Hub</strong> → under "Options & Multipliers" or "CFDs"</p>
+                  <p>2. Go to <strong>Trader's Hub</strong> → under "CFDs"</p>
                   <p>3. Click <strong>"Get"</strong> next to an MT5 account (Synthetic Indices or Financial)</p>
                   <p>4. Set a password. Deriv will create your MT5 login ID + server address</p>
                   <p>5. Note your <strong>Login ID</strong>, <strong>Password</strong>, and <strong>Server</strong> (e.g., <code className="bg-card px-1 rounded">Deriv-Server</code>)</p>
@@ -853,6 +1039,7 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
       ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
       : "bg-red-500/15 text-red-400 border-red-500/30",
     ERROR: "bg-red-500/15 text-red-400 border-red-500/30",
+    PROTECTION: "bg-purple-500/15 text-purple-400 border-purple-500/30",
   };
 
   const directionColors: Record<string, string> = {
@@ -874,7 +1061,7 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
         </span>
 
         {/* Action badge */}
-        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${actionColors[entry.action] ?? ""} w-12 text-center shrink-0`}>
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${actionColors[entry.action] ?? ""} w-20 text-center shrink-0`}>
           {entry.action}
         </span>
 

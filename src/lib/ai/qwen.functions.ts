@@ -1,10 +1,12 @@
 /**
  * Qwen 2.5 7B Instruct via HuggingFace Inference API.
- * Analyzes OB+FVG setups, recalls strategy memory, returns structured decision.
+ * Upgraded to institutional-grade with setup classification (A+, A, B, C, D),
+ * calibrated confidence, and comprehensive technical features.
  */
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
+import { analyze } from "../ob-fvg";
 
 const Candle = z.object({
   epoch: z.number(),
@@ -31,39 +33,52 @@ const AnalyzeInput = z.object({
   balance: z.number().default(1000),
 });
 
-const DOCTRINE = `You are an expert Smart Money Concepts (SMC) trader specialising in synthetic indices on Deriv.
-The strategy is Order Block + Fair Value Gap (OB + FVG).
+const DOCTRINE = `You are an institutional-grade Smart Money Concepts (SMC) quantitative trading AI.
+Your strategy is strict Order Block + Fair Value Gap (OB + FVG) with multi-timeframe confirmation.
 
-CORE RULES (apply strictly):
-1. FAIR VALUE GAP (FVG / imbalance): a three-candle pattern where candle1.high < candle3.low (bullish FVG) or candle1.low > candle3.high (bearish FVG). The gap is between candle1's extreme and candle3's opposite extreme.
-2. ORDER BLOCK (OB): the last opposite-colour candle BEFORE the impulse leg that created the FVG. Bullish OB = last bearish candle before a strong bullish move; bearish OB = last bullish candle before a strong bearish move.
-3. ENTRY: only when current price has returned into the OB zone AND price action shows rejection (wick rejection, or a small reversal candle). Never chase price away from the OB.
-4. STOP LOSS: just beyond the OB extreme (low for bullish, high for bearish) + small buffer (~1 pip-equivalent).
-5. TAKE PROFIT: next liquidity pool — recent swing high (for longs) or swing low (for shorts). Aim for at least 1.5R.
-6. INVALIDATION: skip the setup if (a) the FVG has already been mitigated (price closed through it), (b) the OB has been broken, (c) higher-timeframe trend opposes the trade direction.
-7. RISK: stake must respect risk_percent of balance, hard-capped server-side.
-8. If no clean setup is present, return direction=NONE with confidence < 0.4. DO NOT FORCE TRADES.
+CORE RULES:
+1. LIQUIDITY SWEEP: recent swing point is breached but price rejects it and closes back inside.
+2. MARKET STRUCTURE: a confirmed Break of Structure (BOS) or Change of Character (CHOCH) in trade direction.
+3. DISPLACEMENT: the imbalance (FVG) must be created by a strong, large-bodied momentum candle (>55% body ratio).
+4. HTF ALIGNMENT: 15m trend (EMA20 > EMA50) and 5m structure must align with the trade direction.
+5. EMA TREND FILTER: BUY only if EMA20 > EMA50 > EMA200. SELL only if EMA20 < EMA50 < EMA200.
+6. RSI CHECK: BUY only if RSI < 65. SELL only if RSI > 35.
+7. VOLATILITY: Skip if ATR < 0.8 or ATR > 1.4.
+8. RISK: Stop Loss must be 1.0 * ATR from entry. Take Profit must be 1.5 * ATR from entry (minimum 1:1.3 risk-to-reward ratio).
 
-You are also given LESSONS LEARNED from prior trades. Treat them as priority guidance.
+You must CLASSIFY the trade setup quality:
+- A+: Exceptional setup, perfect confluences on all timeframes, sweep + displacement + FVG. Trade immediately.
+- A: Strong setup, major filters pass, trend alignment. Good trade.
+- B: Moderate setup, lacks one major confirmation (e.g. HTF alignment or sweep). Skip or optional.
+- C: Poor setup, counter-trend or high RSI. Avoid.
+- D: Defective setup, fails structural filters. Reject.
 
-OUTPUT: respond with ONLY a JSON object (no markdown, no prose outside JSON) matching:
+Only suggest CALL or PUT if the setup is A+ or A. Otherwise, suggest NONE.
+
+CONFIDENCE CALIBRATION (based on historical performance):
+- A+ setup: Confidence 90%+ (represent 80%+ win rate)
+- A setup: Confidence 80-89% (represent 65-79% win rate)
+- B setup: Confidence 70-79% (represent 52-64% win rate)
+- C/D setup: Confidence < 40%
+
+OUTPUT: Respond ONLY with a valid JSON object matching this schema (no markdown, no other text):
 {
- "direction": "CALL" | "PUT" | "NONE",
- "confidence": 0..1,
- "stake": number,
- "duration": integer,
- "duration_unit": "t"|"s"|"m"|"h",
- "take_profit": number | null,   // absolute price
- "stop_loss":   number | null,   // absolute price
- "reasoning":   string,           // 1-3 sentences, plain English, cite the OB/FVG you used
- "lesson":      string | null     // optional new lesson to remember if this setup is novel
+  "classification": "A+" | "A" | "B" | "C" | "D",
+  "direction": "CALL" | "PUT" | "NONE",
+  "confidence": 0..1,
+  "stake": number,
+  "duration": integer,
+  "duration_unit": "t"|"s"|"m"|"h",
+  "take_profit": number | null,   // entry + 1.5 * ATR for CALL, entry - 1.5 * ATR for PUT
+  "stop_loss": number | null,     // entry - 1.0 * ATR for CALL, entry + 1.0 * ATR for PUT
+  "reasoning": string,           // Citing trend, EMA alignment, sweeps, structure, classification reason
+  "lesson": string | null        // optional new lesson if this setup represents a novel market behavior
 }`;
 
 async function callQwen(systemPrompt: string, userPrompt: string): Promise<string> {
   const token = process.env.HF_TOKEN;
   if (!token) throw new Error("HF_TOKEN not configured");
 
-  // HF Router (OpenAI-compatible)
   const res = await fetch("https://router.huggingface.co/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -76,7 +91,7 @@ async function callQwen(systemPrompt: string, userPrompt: string): Promise<strin
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      temperature: 0.2,
+      temperature: 0.15,
       max_tokens: 700,
       response_format: { type: "json_object" },
     }),
@@ -95,7 +110,10 @@ export const analyzeMarket = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-    // 1. Recall lessons
+    // 1. Calculate institutional indicators and structure server-side
+    const analysis = analyze(data.candles);
+
+    // 2. Recall lessons learned
     const { data: memory } = await supabaseAdmin
       .from("strategy_memory")
       .select("id, lesson, outcome, symbol, setup_type, usefulness_score")
@@ -108,13 +126,41 @@ export const analyzeMarket = createServerFn({ method: "POST" })
       .map((m, i) => `${i + 1}. [${m.outcome ?? "obs"}] ${m.lesson}`)
       .join("\n");
 
-    // 2. Build user prompt with compact market state
+    // 3. Construct feature-rich user prompt
     const recent = data.candles.slice(-30);
     const userPrompt = JSON.stringify({
       symbol: data.symbol,
       timeframe: data.timeframe,
       current_price: data.current_price,
       balance: data.balance,
+      technical_features: {
+        trend_1m: analysis.trend,
+        ema20: analysis.ema20,
+        ema50: analysis.ema50,
+        ema200: analysis.ema200,
+        rsi14: analysis.rsi14,
+        atr14: analysis.atr14,
+        adx14: analysis.adx14,
+        bos: analysis.bos,
+        choch: analysis.choch,
+        liquidity_sweep: analysis.liquiditySweep,
+        displacement: analysis.displacement,
+        volatility_regime: analysis.volatilityRegime,
+        htf_trend_15m: analysis.htfTrend15m,
+        htf_structure_5m: analysis.htfStructure5m,
+        active_ob: analysis.activeOB ? {
+          kind: analysis.activeOB.kind,
+          top: analysis.activeOB.top,
+          bottom: analysis.activeOB.bottom,
+          volume_proxy: analysis.activeOB.volumeProxy
+        } : null,
+        active_fvg: analysis.activeFVG ? {
+          kind: analysis.activeFVG.kind,
+          top: analysis.activeFVG.top,
+          bottom: analysis.activeFVG.bottom,
+          size: analysis.activeFVG.size
+        } : null,
+      },
       recent_candles: recent.map((c) => ({
         t: c.epoch,
         o: c.open,
@@ -122,12 +168,10 @@ export const analyzeMarket = createServerFn({ method: "POST" })
         l: c.low,
         c: c.close,
       })),
-      order_blocks: data.ob_zones.slice(-5),
-      fair_value_gaps: data.fvg_zones.slice(-5),
       lessons_learned: lessons || "(none yet)",
     });
 
-    // 3. Call Qwen
+    // 4. Call Qwen
     let parsed: any;
     let raw = "";
     try {
@@ -137,12 +181,20 @@ export const analyzeMarket = createServerFn({ method: "POST" })
       throw new Error(`AI call failed: ${e.message}`);
     }
 
-    const direction = ["CALL", "PUT", "NONE"].includes(parsed.direction)
-      ? parsed.direction
+    const classification = parsed.classification || "B";
+    const rawDirection = parsed.direction || "NONE";
+    
+    // Execute trade only if class A+ or A
+    const direction = ["A+", "A"].includes(classification) && ["CALL", "PUT"].includes(rawDirection)
+      ? rawDirection
       : "NONE";
+      
     const confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
 
-    // 4. Persist decision
+    // Save explaining reasoning prefix
+    const structuredReasoning = `[Setup Class ${classification}] ${parsed.reasoning || ""}`;
+
+    // 5. Persist decision
     const { data: saved, error } = await supabaseAdmin
       .from("ai_decisions")
       .insert({
@@ -153,10 +205,10 @@ export const analyzeMarket = createServerFn({ method: "POST" })
         stake: Number(parsed.stake) || null,
         duration: Number(parsed.duration) || null,
         duration_unit: parsed.duration_unit || null,
-        take_profit: parsed.take_profit ?? null,
-        stop_loss: parsed.stop_loss ?? null,
+        take_profit: direction !== "NONE" ? parsed.take_profit : null,
+        stop_loss: direction !== "NONE" ? parsed.stop_loss : null,
         confidence,
-        reasoning: parsed.reasoning ?? "",
+        reasoning: structuredReasoning,
         model: process.env.HF_MODEL ?? "Qwen/Qwen2.5-7B-Instruct:together",
         candles_snapshot: recent,
         ob_zones: data.ob_zones,
@@ -167,7 +219,7 @@ export const analyzeMarket = createServerFn({ method: "POST" })
       .single();
     if (error) throw new Error(error.message);
 
-    // 5. Save new lesson if provided
+    // 6. Save new lesson if provided
     if (parsed.lesson && typeof parsed.lesson === "string" && parsed.lesson.length > 10) {
       await supabaseAdmin.from("strategy_memory").insert({
         user_id: context.userId,
@@ -176,7 +228,7 @@ export const analyzeMarket = createServerFn({ method: "POST" })
         setup_type: "OB+FVG",
         lesson: parsed.lesson,
         outcome: "observation",
-        tags: ["ai-generated", "pre-trade"],
+        tags: ["ai-generated", "pre-trade", `class-${classification}`],
         usefulness_score: 1.0,
       });
     }

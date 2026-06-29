@@ -116,9 +116,30 @@ export const updateBotBalance = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("bot_runs")
-      .update({ account_balance: data.account_balance })
+      .update({ account_balance: data.account_balance, total_pnl: 0, total_trades: 0 }) // reset statistics when updating balance
       .eq("id", data.id)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
+
+export const resetBotStats = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { error } = await supabaseAdmin
+      .from("bot_runs")
+      .update({ total_pnl: 0, total_trades: 0, last_error: null })
+      .eq("id", data.id)
+      .eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
