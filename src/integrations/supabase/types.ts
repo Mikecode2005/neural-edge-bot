@@ -158,41 +158,187 @@ export type Database = {
         }
         Relationships: []
       }
+      backtest_runs: {
+        Row: {
+          created_at: string
+          end_epoch: number
+          equity_curve: Json
+          error: string | null
+          final_balance: number | null
+          final_pnl: number | null
+          id: string
+          params: Json
+          start_epoch: number
+          starting_balance: number
+          status: string
+          symbol: string
+          timeframe: string
+          trades: Json
+          trades_count: number
+          updated_at: string
+          user_id: string
+          win_rate: number | null
+        }
+        Insert: {
+          created_at?: string
+          end_epoch: number
+          equity_curve?: Json
+          error?: string | null
+          final_balance?: number | null
+          final_pnl?: number | null
+          id?: string
+          params?: Json
+          start_epoch: number
+          starting_balance?: number
+          status?: string
+          symbol: string
+          timeframe?: string
+          trades?: Json
+          trades_count?: number
+          updated_at?: string
+          user_id: string
+          win_rate?: number | null
+        }
+        Update: {
+          created_at?: string
+          end_epoch?: number
+          equity_curve?: Json
+          error?: string | null
+          final_balance?: number | null
+          final_pnl?: number | null
+          id?: string
+          params?: Json
+          start_epoch?: number
+          starting_balance?: number
+          status?: string
+          symbol?: string
+          timeframe?: string
+          trades?: Json
+          trades_count?: number
+          updated_at?: string
+          user_id?: string
+          win_rate?: number | null
+        }
+        Relationships: []
+      }
       bot_runs: {
         Row: {
+          account_loginid: string | null
           account_type: string
           id: string
+          interval_seconds: number
+          last_error: string | null
+          last_tick_at: string | null
+          market_mode: string
+          max_stake_per_trade: number
+          min_confidence: number
           mode: string
           started_at: string
           status: string
           stopped_at: string | null
           symbol: string
+          timeframe: string
           total_pnl: number
           total_trades: number
           user_id: string
         }
         Insert: {
+          account_loginid?: string | null
           account_type: string
           id?: string
+          interval_seconds?: number
+          last_error?: string | null
+          last_tick_at?: string | null
+          market_mode?: string
+          max_stake_per_trade?: number
+          min_confidence?: number
           mode: string
           started_at?: string
           status?: string
           stopped_at?: string | null
           symbol: string
+          timeframe?: string
           total_pnl?: number
           total_trades?: number
           user_id: string
         }
         Update: {
+          account_loginid?: string | null
           account_type?: string
           id?: string
+          interval_seconds?: number
+          last_error?: string | null
+          last_tick_at?: string | null
+          market_mode?: string
+          max_stake_per_trade?: number
+          min_confidence?: number
           mode?: string
           started_at?: string
           status?: string
           stopped_at?: string | null
           symbol?: string
+          timeframe?: string
           total_pnl?: number
           total_trades?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
+      chat_messages: {
+        Row: {
+          created_at: string
+          id: string
+          parts: Json
+          role: string
+          thread_id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          parts?: Json
+          role: string
+          thread_id: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          parts?: Json
+          role?: string
+          thread_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "chat_messages_thread_id_fkey"
+            columns: ["thread_id"]
+            isOneToOne: false
+            referencedRelation: "chat_threads"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      chat_threads: {
+        Row: {
+          created_at: string
+          id: string
+          title: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          title?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          title?: string
+          updated_at?: string
           user_id?: string
         }
         Relationships: []
@@ -667,9 +813,12 @@ export type Database = {
         Row: {
           account_mode: string
           auto_trade: boolean
+          confidence_stake_curve: Json
           confidence_threshold: number
           created_at: string
+          custom_doctrine: string | null
           dark_mode: boolean
+          default_interval_seconds: number
           default_symbol: string
           default_timeframe: string
           id: string
@@ -689,9 +838,12 @@ export type Database = {
         Insert: {
           account_mode?: string
           auto_trade?: boolean
+          confidence_stake_curve?: Json
           confidence_threshold?: number
           created_at?: string
+          custom_doctrine?: string | null
           dark_mode?: boolean
+          default_interval_seconds?: number
           default_symbol?: string
           default_timeframe?: string
           id?: string
@@ -711,9 +863,12 @@ export type Database = {
         Update: {
           account_mode?: string
           auto_trade?: boolean
+          confidence_stake_curve?: Json
           confidence_threshold?: number
           created_at?: string
+          custom_doctrine?: string | null
           dark_mode?: boolean
+          default_interval_seconds?: number
           default_symbol?: string
           default_timeframe?: string
           id?: string
@@ -781,6 +936,7 @@ export type Database = {
           last_used_at: string | null
           lesson: string
           outcome: string | null
+          pinned: boolean
           pnl: number | null
           setup_type: string | null
           symbol: string | null
@@ -797,6 +953,7 @@ export type Database = {
           last_used_at?: string | null
           lesson: string
           outcome?: string | null
+          pinned?: boolean
           pnl?: number | null
           setup_type?: string | null
           symbol?: string | null
@@ -813,6 +970,7 @@ export type Database = {
           last_used_at?: string | null
           lesson?: string
           outcome?: string | null
+          pinned?: boolean
           pnl?: number | null
           setup_type?: string | null
           symbol?: string | null

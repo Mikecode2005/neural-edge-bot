@@ -15,6 +15,7 @@ import {
   Zap,
 } from "lucide-react";
 
+import { AppNav } from "@/components/AppNav";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { SymbolSelector } from "@/components/dashboard/SymbolSelector";
 import { PriceChart } from "@/components/dashboard/PriceChart";
@@ -77,6 +78,7 @@ function Dashboard() {
   const [symbol, setSymbol] = useState("R_10");
   const [candles, setCandles] = useState<DerivCandle[]>([]);
   const [livePrice, setLivePrice] = useState<number | null>(null);
+  const [chartType, setChartType] = useState<"line" | "prediction" | "candle">("prediction");
 
   // Auth/account
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
@@ -343,8 +345,10 @@ function Dashboard() {
   const connected = !!activeToken;
 
   return (
-    <div className="min-h-screen px-6 py-6 max-w-[1600px] mx-auto">
+    <div className="min-h-screen bg-background">
       <Toaster theme="dark" position="top-right" richColors />
+      <AppNav />
+      <div className="px-6 py-6 max-w-[1600px] mx-auto">
 
       <header className="flex flex-wrap items-center justify-between gap-4 mb-6">
         <div className="flex items-center gap-3">
@@ -451,13 +455,30 @@ function Dashboard() {
         />
       </section>
 
-      <div className="mb-4">
+      <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
         <SymbolSelector value={symbol} onChange={setSymbol} />
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Chart</span>
+          <select
+            value={chartType}
+            onChange={(e) => setChartType(e.target.value as any)}
+            className="bg-card border border-border rounded-md px-2 py-1.5 text-xs"
+            aria-label="Chart type"
+          >
+            <option value="line">Line</option>
+            <option value="prediction">Line + AI prediction</option>
+            <option value="candle">Candle (coming soon)</option>
+          </select>
+        </div>
       </div>
 
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2">
-          <PriceChart candles={candles} analysis={analysis} livePrice={livePrice} />
+          <PriceChart
+            candles={candles}
+            analysis={chartType === "line" ? null : analysis}
+            livePrice={livePrice}
+          />
         </div>
 
         <div className="glass rounded-xl p-4 flex flex-col gap-3 min-h-[420px]">
@@ -551,6 +572,7 @@ function Dashboard() {
           )}
         </div>
       </section>
+      </div>
     </div>
   );
 }
