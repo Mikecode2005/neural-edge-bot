@@ -553,7 +553,8 @@ function Dashboard() {
               token, then Qwen returns a structured prediction plus explanation.
             </p>
           )}
-        </section>
+        </div>
+      </section>
       </div>
     </div>
   );
