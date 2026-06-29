@@ -1,7 +1,8 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Brain } from "lucide-react";
+import { Brain, Zap } from "lucide-react";
 import { toast } from "sonner";
+import { useServerFn } from "@tanstack/react-start";
 
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable";
@@ -9,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Toaster } from "@/components/ui/sonner";
+import { devGenerateSession } from "@/lib/auth/dev-login.functions";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -75,6 +77,30 @@ function AuthPage() {
     }
   };
 
+  const devLoginEnabled = (import.meta as any).env?.VITE_ENABLE_DEV_LOGIN === "true";
+  const fnDevSession = useServerFn(devGenerateSession);
+  const onDevLogin = async () => {
+    setBusy(true);
+    try {
+      const { email, hashed_token } = (await fnDevSession()) as {
+        email: string;
+        hashed_token: string;
+      };
+      const { error } = await supabase.auth.verifyOtp({
+        type: "magiclink",
+        email,
+        token_hash: hashed_token,
+      });
+      if (error) throw error;
+      toast.success("Signed in as dev user");
+      navigate({ to: "/dashboard" });
+    } catch (e: any) {
+      toast.error("Dev sign-in failed", { description: e.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
       <Toaster theme="dark" position="top-right" richColors />
@@ -99,9 +125,19 @@ function AuthPage() {
               : "Start trading with AI in under a minute."}
           </p>
 
-          <Button onClick={onGoogle} disabled={busy} variant="outline" className="w-full mb-4">
+          <Button onClick={onGoogle} disabled={busy} variant="outline" className="w-full mb-2">
             Continue with Google
           </Button>
+          {devLoginEnabled && (
+            <Button
+              onClick={onDevLogin}
+              disabled={busy}
+              variant="secondary"
+              className="w-full mb-4 gap-1.5"
+            >
+              <Zap className="size-3.5" /> Dev one-click sign in
+            </Button>
+          )}
 
           <div className="relative my-4">
             <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
