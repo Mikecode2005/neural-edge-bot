@@ -11,6 +11,8 @@ const StartInput = z.object({
   interval_seconds: z.number().int().min(10).max(3600).default(60),
   min_confidence: z.number().min(0).max(1).default(0.7),
   max_stake_per_trade: z.number().positive().default(1),
+  min_stake_per_trade: z.number().positive().default(0.35),
+  strategy_mode: z.enum(["qwen", "ob-fvg"]).default("qwen"),
   account_balance: z.number().positive().default(1000),
 });
 
@@ -32,9 +34,11 @@ export const startBot = createServerFn({ method: "POST" })
         interval_seconds: data.interval_seconds,
         min_confidence: data.min_confidence,
         max_stake_per_trade: data.max_stake_per_trade,
+        min_stake_per_trade: data.min_stake_per_trade,
+        strategy_mode: data.strategy_mode,
         account_balance: data.account_balance,
         status: "running",
-      })
+      } as any)
       .select()
       .single();
     if (error) throw new Error(error.message);
@@ -142,4 +146,3 @@ export const resetBotStats = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     return { ok: true };
   });
-

@@ -56,6 +56,8 @@ interface BotRow {
   interval_seconds: number;
   min_confidence: number;
   max_stake_per_trade: number;
+  min_stake_per_trade?: number; // fallback: 0.35
+  strategy_mode?: "qwen" | "ob-fvg"; // fallback: "qwen"
   total_trades: number;
   total_pnl: number;
   last_tick_at: string | null;
@@ -121,6 +123,8 @@ function BotsPage() {
     interval_seconds: 60,
     min_confidence: 0.7,
     max_stake_per_trade: 1,
+    min_stake_per_trade: 0.35,
+    strategy_mode: "qwen" as "qwen" | "ob-fvg",
     account_balance: 1000,
   });
 
@@ -271,38 +275,90 @@ function BotsPage() {
         ? `${analysis.activeFVG.kind} FVG [${analysis.activeFVG.bottom.toFixed(4)}, ${analysis.activeFVG.top.toFixed(4)}]`
         : "None";
 
-      // Call server-side Qwen which retrieves lessons and classifies setup
-      const ai = await fnAnalyzeMarket({
-        data: {
-          symbol: bot.symbol,
-          timeframe: bot.timeframe,
-          candles: candles.slice(-60),
-          ob_zones: [],
-          fvg_zones: [],
-          current_price: price,
-          balance: currentBalance,
+      // Determine AI decision based on strategy mode
+      const isObFvgMode = (bot.strategy_mode ?? "qwen") === "ob-fvg";
+      let ai: any = null;
+      
+      if (isObFvgMode) {
+        // ── OB+FVG STRATEGY MODE ──
+        // Use the local analysis directly without calling Qwen AI
+        if (analysis.decision === "WAIT" || analysis.confidence < bot.min_confidence) {
+          addLog(bot.id, {
+            timestamp: ts, action: "SCAN", symbol: bot.symbol,
+            direction: analysis.decision === "BUY" ? "CALL" : "PUT", confidence: analysis.confidence,
+            entryPrice: price, stake: null,
+            stopLoss: analysis.sl ?? null, takeProfit: analysis.tp ?? null,
+            duration: "5t",
+            pnl: null,
+            reasoning: `OB+FVG Analysis: ${analysis.rationale} | Confidence ${(analysis.confidence * 100).toFixed(0)}% below threshold ${(bot.min_confidence * 100).toFixed(0)}%`,
+            obZone: obInfo, fvgZone: fvgInfo,
+            riskCheck: "N/A (no trade)",
+            trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
+            rsi14: analysis.rsi14, atr14: analysis.atr14,
+          });
+          await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0 } });
+          return;
         }
-      });
-
-      if (ai.direction === "NONE" || ai.confidence < bot.min_confidence) {
-        addLog(bot.id, {
-          timestamp: ts, action: "SCAN", symbol: bot.symbol,
-          direction: ai.direction, confidence: ai.confidence,
-          entryPrice: price, stake: null,
-          stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-          duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : null,
-          pnl: null,
-          reasoning: ai.reasoning || `Confidence ${(ai.confidence * 100).toFixed(0)}% below threshold ${(bot.min_confidence * 100).toFixed(0)}%`,
-          obZone: obInfo, fvgZone: fvgInfo,
-          riskCheck: "N/A (no trade)",
-          trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-          rsi14: analysis.rsi14, atr14: analysis.atr14,
+        
+        ai = {
+          direction: analysis.decision === "BUY" ? "CALL" : "PUT",
+          confidence: analysis.confidence,
+          stake: bot.max_stake_per_trade,
+          stop_loss: analysis.sl,
+          take_profit: analysis.tp,
+          reasoning: analysis.rationale,
+          decision_id: null,
+          duration: 5,
+          duration_unit: "t" as const,
+        };
+      } else {
+        // ── QWEN AI MODE ──
+        ai = await fnAnalyzeMarket({
+          data: {
+            symbol: bot.symbol,
+            timeframe: bot.timeframe,
+            candles: candles.slice(-60),
+            ob_zones: [],
+            fvg_zones: [],
+            current_price: price,
+            balance: currentBalance,
+          }
         });
-        await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0 } });
-        return;
+
+        if (ai.direction === "NONE" || ai.confidence < bot.min_confidence) {
+          addLog(bot.id, {
+            timestamp: ts, action: "SCAN", symbol: bot.symbol,
+            direction: ai.direction, confidence: ai.confidence,
+            entryPrice: price, stake: null,
+            stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
+            duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : null,
+            pnl: null,
+            reasoning: ai.reasoning || `Confidence ${(ai.confidence * 100).toFixed(0)}% below threshold ${(bot.min_confidence * 100).toFixed(0)}%`,
+            obZone: obInfo, fvgZone: fvgInfo,
+            riskCheck: "N/A (no trade)",
+            trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
+            rsi14: analysis.rsi14, atr14: analysis.atr14,
+          });
+          await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0 } });
+          return;
+        }
       }
 
-      const stake = Math.max(0.35, Math.min(ai.stake ?? 1, bot.max_stake_per_trade));
+      // ── BALANCE-AWARE STAKE SIZING ──
+      // Stake is bounded by: min 0.35, max_stake_per_trade setting, and cannot exceed 50% of current balance
+      const minStake = bot.min_stake_per_trade ?? 0.35;
+      let stake = Math.max(minStake, Math.min(ai.stake ?? 1, bot.max_stake_per_trade));
+      
+      // Balance safety: stake cannot exceed 50% of current available balance
+      const maxAllowedStake = Math.min(bot.max_stake_per_trade, currentBalance * 0.5);
+      if (stake > maxAllowedStake) {
+        stake = Math.max(0.35, maxAllowedStake);
+      }
+      // Final safety: stake can never exceed current balance
+      if (stake > currentBalance) {
+        stake = Math.max(0.35, currentBalance * 0.5);
+      }
+
       const risk = (await fnCheckRisk({
         data: { proposed_stake: stake, account_type: "demo" },
       })) as { ok: boolean; reason?: string };
@@ -521,6 +577,8 @@ function BotsPage() {
         interval_seconds: form.interval_seconds,
         min_confidence: form.min_confidence,
         max_stake_per_trade: form.max_stake_per_trade,
+        min_stake_per_trade: form.min_stake_per_trade,
+        strategy_mode: form.strategy_mode,
         account_balance: form.account_balance,
       },
     })) as BotRow;
@@ -603,7 +661,7 @@ function BotsPage() {
           <h2 className="text-sm font-semibold flex items-center gap-2">
             <Play className="size-3.5 text-primary" /> New Bot
           </h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
             <div>
               <Label className="text-xs">Symbol</Label>
               <select
@@ -672,6 +730,29 @@ function BotsPage() {
                   setForm({ ...form, max_stake_per_trade: Number(e.target.value) })
                 }
               />
+            </div>
+            <div>
+              <Label className="text-xs">Min Stake</Label>
+              <Input
+                type="number"
+                step="0.1"
+                min={0.35}
+                value={form.min_stake_per_trade}
+                onChange={(e) =>
+                  setForm({ ...form, min_stake_per_trade: Number(e.target.value) })
+                }
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Strategy Mode</Label>
+              <select
+                className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
+                value={form.strategy_mode}
+                onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as "qwen" | "ob-fvg" })}
+              >
+                <option value="qwen">Qwen AI (with memory)</option>
+                <option value="ob-fvg">OB+FVG Strategy Only</option>
+              </select>
             </div>
           </div>
           <Button onClick={onCreate} className="gap-1.5">

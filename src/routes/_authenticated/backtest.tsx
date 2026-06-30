@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import {
@@ -13,6 +13,9 @@ import {
   XAxis,
   YAxis,
   Tooltip,
+  ComposedChart,
+  Line,
+  Scatter,
 } from "recharts";
 import {
   ChevronDown,
@@ -29,6 +32,11 @@ import {
   Shield,
   Clock,
   Settings2,
+  Brain,
+  Calculator,
+  Wallet,
+  CandlestickChart,
+  Info,
 } from "lucide-react";
 
 import { AppNav } from "@/components/AppNav";
@@ -66,6 +74,20 @@ interface Trade {
   fvgZone: string | null;
   barsHeld: number;
   outcome: "WIN" | "LOSS";
+  // Enhanced fields
+  balanceAtEntry: number;
+  balanceAtExit: number;
+  stake: number;
+  stopLoss: number;
+  takeProfit: number;
+  entryCandleEpoch: number;
+  exitCandleEpoch: number;
+  entryCandleIdx: number;
+  entryTimeFormatted: string;
+  exitTimeFormatted: string;
+  riskPct: number;
+  distanceToSL: number;
+  distanceToTP: number;
 }
 
 interface BacktestMetrics {
@@ -91,6 +113,14 @@ interface BacktestMetrics {
   avgBarsHeld: number;
   grossProfit: number;
   grossLoss: number;
+}
+
+interface Candlestick {
+  epoch: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
 }
 
 const TIMEFRAMES = [
@@ -121,6 +151,58 @@ function BacktestPage() {
   const [history, setHistory] = useState<any[]>([]);
   const [showTradeLog, setShowTradeLog] = useState(false);
   const [showPastTests, setShowPastTests] = useState(true);
+  const [expandedTradeIdx, setExpandedTradeIdx] = useState<number | null>(null);
+
+  // NEW: Strategy mode toggle & risk settings
+  const [strategyMode, setStrategyMode] = useState<"strategy" | "qwen">("strategy");
+  const [riskMode, setRiskMode] = useState<"fixed" | "dynamic_pct" | "dynamic_kelly">("fixed");
+  const [riskPerTrade, setRiskPerTrade] = useState(0.02); // 2% risk per trade
+  const [maxStakePct, setMaxStakePct] = useState(0.10); // max 10% of balance
+  const [showCandleChart, setShowCandleChart] = useState(false);
+  const [selectedTradeCandles, setSelectedTradeCandles] = useState<Candlestick[]>([]);
+
+  // Store all candles for chart rendering
+  const [allCandles, setAllCandles] = useState<Candlestick[]>([]);
+
+  // Calculate dynamic stake based on balance and risk mode
+  const calcStake = useCallback((balance: number, atr: number, isBuy: boolean, currentPrice: number): number => {
+    if (riskMode === "fixed") return stake;
+    
+    if (riskMode === "dynamic_pct") {
+      const pctStake = balance * riskPerTrade;
+      // Cap at maxStakePct of balance
+      const maxAllowed = balance * maxStakePct;
+      const finalStake = Math.min(pctStake, maxAllowed);
+      // Ensure minimum of $0.35 (Deriv minimum)
+      return Math.max(0.35, finalStake);
+    }
+    
+    if (riskMode === "dynamic_kelly") {
+      // Simplified Kelly: f = (p * b - q) / b
+      // where p = win probability (confidence), q = 1-p, b = payout odds (0.85)
+      const p = 0.55; // base assumption
+      const b = 0.85; // payout odds
+      const q = 1 - p;
+      const kellyFrac = Math.max(0, (p * b - q) / b);
+      // Use quarter Kelly for safety
+      const quarterKelly = kellyFrac * 0.25;
+      const kellyStake = balance * quarterKelly;
+      const maxAllowed = balance * maxStakePct;
+      const finalStake = Math.min(kellyStake, maxAllowed);
+      return Math.max(0.35, finalStake);
+    }
+    
+    return stake;
+  }, [riskMode, riskPerTrade, maxStakePct, stake]);
+
+  // Get candles around a trade for visual chart
+  const getCandlesAroundTrade = useCallback((trade: Trade, allC: Candlestick[]) => {
+    const idx = allC.findIndex(c => c.epoch === trade.entryCandleEpoch);
+    if (idx < 0) return [];
+    const start = Math.max(0, idx - 10);
+    const end = Math.min(allC.length, idx + 15);
+    return allC.slice(start, end);
+  }, []);
 
   useEffect(() => {
     fnList().then(setHistory).catch(() => {});
@@ -209,10 +291,14 @@ function BacktestPage() {
     setTrades([]);
     setMetrics(null);
     setProgress(0);
+    setExpandedTradeIdx(null);
+    setShowCandleChart(false);
+    setSelectedTradeCandles([]);
     try {
       const ws = getDerivWS();
       const timeframeMinutes = TIMEFRAMES.find((t) => t.code === timeframe)?.value ?? 60;
       const candles = await ws.fetchCandles(symbol, timeframeMinutes, count);
+      setAllCandles(candles);
       if (candles.length < 60) {
         toast.error("Not enough historical candles");
         return;
@@ -224,6 +310,7 @@ function BacktestPage() {
       ];
       const ddCurve: { t: number; dd: number }[] = [{ t: candles[60].epoch, dd: 0 }];
       let peak = balance;
+      let tradeNum = 0;
 
       let openIdx: number | null = null;
       let openSide: "BUY" | "SELL" | null = null;
@@ -231,6 +318,7 @@ function BacktestPage() {
       let openSL = 0;
       let openTP = 0;
       let openAnalysis: any = null;
+      let openStake = 0;
 
       // consecutive loss protection tracker
       let currentStreakLosses = 0;
@@ -266,7 +354,8 @@ function BacktestPage() {
           if (hitTP || hitSL || maxHoldReached) {
             const exit = hitTP ? openTP : hitSL ? openSL : close;
             const won = hitTP || (!hitSL && (exit - openEntry) * (openSide === "BUY" ? 1 : -1) > 0);
-            const pnl = won ? stake * 0.85 : -stake;
+            const pnl = won ? openStake * 0.85 : -openStake;
+            const balanceBeforeTrade = balance;
             balance += pnl;
             const cumPnl = balance - startingBalance;
 
@@ -277,8 +366,13 @@ function BacktestPage() {
               ? `${openAnalysis.activeFVG.kind} [${openAnalysis.activeFVG.bottom.toFixed(4)}, ${openAnalysis.activeFVG.top.toFixed(4)}]`
               : null;
 
+            tradeNum++;
+            const entryCandle = candles[openIdx];
+            const distanceToSL = Math.abs(openEntry - openSL);
+            const distanceToTP = Math.abs(openEntry - openTP);
+
             localTrades.push({
-              t: candles[openIdx].epoch,
+              t: entryCandle.epoch,
               exitT: c.epoch,
               side: openSide,
               entry: openEntry,
@@ -295,6 +389,20 @@ function BacktestPage() {
               fvgZone,
               barsHeld: i - openIdx,
               outcome: won ? "WIN" : "LOSS",
+              // Enhanced fields
+              balanceAtEntry: balanceBeforeTrade,
+              balanceAtExit: balance,
+              stake: openStake,
+              stopLoss: openSL,
+              takeProfit: openTP,
+              entryCandleEpoch: entryCandle.epoch,
+              exitCandleEpoch: c.epoch,
+              entryCandleIdx: openIdx,
+              entryTimeFormatted: new Date(entryCandle.epoch * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+              exitTimeFormatted: new Date(c.epoch * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+              riskPct: balanceBeforeTrade > 0 ? (openStake / balanceBeforeTrade) * 100 : 0,
+              distanceToSL,
+              distanceToTP,
             });
             curve.push({ t: c.epoch, equity: balance });
 
@@ -328,6 +436,20 @@ function BacktestPage() {
             openSL = a.sl ?? (openSide === "BUY" ? openEntry - 1.0 * a.atr14 : openEntry + 1.0 * a.atr14);
             openTP = a.tp ?? (openSide === "BUY" ? openEntry + 1.5 * a.atr14 : openEntry - 1.5 * a.atr14);
             openAnalysis = a;
+            
+            // Calculate dynamic stake based on current balance
+            openStake = calcStake(balance, a.atr14, openSide === "BUY", c.close);
+            
+            // Validate that stake doesn't exceed balance
+            if (openStake > balance) {
+              openStake = Math.max(0.35, balance * 0.5); // Use max 50% of balance if stake exceeds balance
+            }
+            
+            // Extra safety: stake can't exceed 50% of balance for any single trade
+            const maxSafeStake = balance * 0.5;
+            if (openStake > maxSafeStake) {
+              openStake = Math.max(0.35, maxSafeStake);
+            }
           }
         }
 
@@ -367,11 +489,11 @@ function BacktestPage() {
           trades_count: localTrades.length,
           equity_curve: curve,
           trades: localTrades,
-          params: { count, minConfidence, stake, startingBalance },
+          params: { count, minConfidence, stake, startingBalance, strategyMode, riskMode, riskPerTrade, maxStakePct },
         },
       });
       toast.success(
-        `Backtest done · ${localTrades.length} trades · ${m.winRate.toFixed(1)}% wins · PF ${m.profitFactor === Infinity ? "∞" : m.profitFactor.toFixed(2)}`
+        `Backtest done · ${localTrades.length} trades · ${m.winRate.toFixed(1)}% wins · PF ${m.profitFactor === Infinity ? "∞" : m.profitFactor.toFixed(2)} · Risk: ${riskMode === "fixed" ? `$${stake}` : `${(riskPerTrade*100).toFixed(1)}%/trade`}`
       );
       fnList().then(setHistory).catch(() => {});
     } catch (e: any) {
@@ -405,6 +527,34 @@ function BacktestPage() {
     return bins;
   })();
 
+  // Compute drawdown from equity curve for stats
+  const equityStats = useMemo(() => {
+    if (equity.length < 2) return null;
+    let peak = equity[0].equity;
+    let maxDD = 0;
+    let maxDDPct = 0;
+    for (const pt of equity) {
+      if (pt.equity > peak) peak = pt.equity;
+      const dd = peak - pt.equity;
+      const ddPct = peak > 0 ? (dd / peak) * 100 : 0;
+      if (dd > maxDD) maxDD = dd;
+      if (ddPct > maxDDPct) maxDDPct = ddPct;
+    }
+    return { maxDD, maxDDPct };
+  }, [equity]);
+
+  const handleExpandTrade = (idx: number, trade: Trade) => {
+    if (expandedTradeIdx === idx) {
+      setExpandedTradeIdx(null);
+      setShowCandleChart(false);
+      return;
+    }
+    setExpandedTradeIdx(idx);
+    const chartCandles = getCandlesAroundTrade(trade, allCandles);
+    setSelectedTradeCandles(chartCandles);
+    setShowCandleChart(chartCandles.length > 0);
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <Toaster theme="dark" position="top-right" richColors />
@@ -414,12 +564,29 @@ function BacktestPage() {
           <h1 className="text-2xl font-semibold tracking-tight">Backtest Engine</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Replay the OB+FVG strategy on historical Deriv candles with walk-forward broker simulation.
-            Adjust parameters to optimize profit factor and drawdown.
+            Adjust parameters to optimize profit factor and drawdown. Stake is now dynamically bounded by your balance.
           </p>
         </header>
 
         {/* ── Config Panel ── */}
         <div className="glass rounded-xl p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold flex items-center gap-2">
+              <Settings2 className="size-3.5 text-primary" /> Backtest Configuration
+            </h2>
+            <div className="flex items-center gap-2 text-xs">
+              {strategyMode === "qwen" && (
+                <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 gap-1">
+                  <Brain className="size-3" /> Qwen AI
+                </Badge>
+              )}
+              {riskMode !== "fixed" && (
+                <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30 gap-1">
+                  <Calculator className="size-3" /> {riskMode === "dynamic_pct" ? "Dynamic %" : "Kelly"}
+                </Badge>
+              )}
+            </div>
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
             <div>
               <Label className="text-xs">Symbol</Label>
@@ -455,7 +622,7 @@ function BacktestPage() {
             <div>
               <Label className="text-xs">Starting Balance ($)</Label>
               <Input
-                type="number" min={100} step={100}
+                type="number" min={1} step={10}
                 value={startingBalance} onChange={(e) => setStartingBalance(Number(e.target.value))}
               />
             </div>
@@ -467,17 +634,108 @@ function BacktestPage() {
               />
             </div>
             <div>
-              <Label className="text-xs">Stake / Trade ($)</Label>
-              <Input
-                type="number" step="0.5"
-                value={stake} onChange={(e) => setStake(Number(e.target.value))}
-              />
+              <Label className="text-xs">Strategy Mode</Label>
+              <select
+                className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
+                value={strategyMode}
+                onChange={(e) => setStrategyMode(e.target.value as "strategy" | "qwen")}
+              >
+                <option value="strategy">OB+FVG Strategy Only</option>
+                <option value="qwen">Qwen AI (requires API)</option>
+              </select>
             </div>
             <div className="flex items-end">
               <Button onClick={run} disabled={running} className="w-full gap-1.5">
                 <Play className="size-3.5" />
                 {running ? `Running ${progress}%` : "Run Backtest"}
               </Button>
+            </div>
+          </div>
+
+          {/* Risk Management Section */}
+          <div className="border-t border-border/40 pt-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              <div>
+                <Label className="text-xs">Risk Mode</Label>
+                <select
+                  className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
+                  value={riskMode}
+                  onChange={(e) => setRiskMode(e.target.value as "fixed" | "dynamic_pct" | "dynamic_kelly")}
+                >
+                  <option value="fixed">Fixed Stake ($)</option>
+                  <option value="dynamic_pct">Dynamic % of Balance</option>
+                  <option value="dynamic_kelly">Kelly Criterion (¼ Kelly)</option>
+                </select>
+              </div>
+              {riskMode === "fixed" && (
+                <div>
+                  <Label className="text-xs">Stake / Trade ($)</Label>
+                  <Input
+                    type="number" step="0.5" min={0.35}
+                    value={stake} onChange={(e) => setStake(Number(e.target.value))}
+                  />
+                </div>
+              )}
+              {riskMode === "dynamic_pct" && (
+                <div>
+                  <Label className="text-xs">Risk % Per Trade</Label>
+                  <Input
+                    type="number" step="0.5" min={0.5} max={50}
+                    value={riskPerTrade * 100}
+                    onChange={(e) => setRiskPerTrade(Number(e.target.value) / 100)}
+                  />
+                </div>
+              )}
+              {riskMode === "dynamic_kelly" && (
+                <div>
+                  <Label className="text-xs">Max Stake % (Cap)</Label>
+                  <Input
+                    type="number" step="1" min={1} max={50}
+                    value={maxStakePct * 100}
+                    onChange={(e) => setMaxStakePct(Number(e.target.value) / 100)}
+                  />
+                </div>
+              )}
+              {(riskMode === "dynamic_pct" || riskMode === "dynamic_kelly") && (
+                <div>
+                  <Label className="text-xs">Max Stake % of Balance</Label>
+                  <Input
+                    type="number" step="1" min={1} max={50}
+                    value={maxStakePct * 100}
+                    onChange={(e) => setMaxStakePct(Number(e.target.value) / 100)}
+                  />
+                </div>
+              )}
+              {startingBalance > 0 && riskMode === "fixed" && (
+                <div>
+                  <Label className="text-xs">Stake % of Balance</Label>
+                  <div className="text-sm font-semibold mt-1.5 numeric">
+                    {((stake / startingBalance) * 100).toFixed(2)}%
+                  </div>
+                </div>
+              )}
+              {startingBalance > 0 && (
+                <div>
+                  <Label className="text-xs">Max Safe Stake</Label>
+                  <div className="text-sm font-semibold mt-1.5 numeric text-bull">
+                    ${(startingBalance * 0.5).toFixed(2)}
+                  </div>
+                </div>
+              )}
+              <div className="flex items-end">
+                <div className="bg-card/50 rounded-lg px-3 py-1.5 border border-border/60 w-full">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Balance Safety</p>
+                  <p className="text-xs mt-0.5">
+                    {riskMode === "fixed" && stake > startingBalance * 0.5 ? (
+                      <span className="text-bear font-semibold">⚠️ Stake exceeds 50% of balance!</span>
+                    ) : riskMode === "fixed" && stake > startingBalance ? (
+                      <span className="text-bear font-semibold">⚠️ Stake exceeds balance!</span>
+                    ) : (
+                      <span className="text-bull">✅ Balance-appropriate sizing</span>
+                    )}
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -637,76 +895,99 @@ function BacktestPage() {
                 <h3 className="text-sm font-semibold flex items-center gap-2">
                   <Clock className="size-3.5 text-primary" />
                   Full Trade Log ({trades.length} trades)
+                  {metrics && (
+                    <Badge variant="outline" className="text-[10px] ml-1">
+                      ${startingBalance} → ${metrics.finalEquity.toFixed(2)}
+                    </Badge>
+                  )}
                 </h3>
                 {showTradeLog ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
               </button>
 
               {showTradeLog && (
-                <div className="border-t border-border max-h-[500px] overflow-auto">
+                <div className="border-t border-border max-h-[600px] overflow-auto">
                   <table className="w-full text-xs">
-                    <thead className="bg-card/60 sticky top-0">
+                    <thead className="bg-card/60 sticky top-0 z-10">
                       <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                         <th className="px-3 py-2">#</th>
-                        <th className="px-3 py-2">Entry Time</th>
-                        <th className="px-3 py-2">Exit Time</th>
+                        <th className="px-3 py-2">Entry</th>
+                        <th className="px-3 py-2">Exit</th>
                         <th className="px-3 py-2">Side</th>
                         <th className="px-3 py-2">Entry</th>
                         <th className="px-3 py-2">Exit</th>
+                        <th className="px-3 py-2">Stake</th>
                         <th className="px-3 py-2">P&L</th>
                         <th className="px-3 py-2">Cum P&L</th>
+                        <th className="px-3 py-2">Balance</th>
+                        <th className="px-3 py-2">Risk %</th>
                         <th className="px-3 py-2">Conf</th>
-                        <th className="px-3 py-2">Trend</th>
-                        <th className="px-3 py-2">EMA20</th>
-                        <th className="px-3 py-2">RSI14</th>
-                        <th className="px-3 py-2">ATR14</th>
                         <th className="px-3 py-2">Bars</th>
-                        <th className="px-3 py-2">OB Zone</th>
-                        <th className="px-3 py-2">FVG Zone</th>
                         <th className="px-3 py-2">Result</th>
+                        <th className="px-3 py-2"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {trades.map((t, i) => (
-                        <tr
-                          key={i}
-                          className={`border-t border-border/30 hover:bg-card/30 transition-colors ${
-                            t.pnl > 0 ? "bg-bull-soft" : t.pnl < 0 ? "bg-bear-soft" : ""
-                          }`}
-                        >
-                          <td className="px-3 py-1.5 text-muted-foreground">{i + 1}</td>
-                          <td className="px-3 py-1.5 numeric">
-                            {new Date(t.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                          </td>
-                          <td className="px-3 py-1.5 numeric">
-                            {new Date(t.exitT * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                          </td>
-                          <td className={`px-3 py-1.5 font-semibold ${t.side === "BUY" ? "text-bull" : "text-bear"}`}>
-                            {t.side}
-                          </td>
-                          <td className="px-3 py-1.5 numeric">{t.entry.toFixed(4)}</td>
-                          <td className="px-3 py-1.5 numeric">{t.exit.toFixed(4)}</td>
-                          <td className={`px-3 py-1.5 numeric font-semibold ${t.pnl >= 0 ? "text-bull" : "text-bear"}`}>
-                            {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}
-                          </td>
-                          <td className={`px-3 py-1.5 numeric ${t.cumPnl >= 0 ? "text-bull" : "text-bear"}`}>
-                            {t.cumPnl >= 0 ? "+" : ""}{t.cumPnl.toFixed(2)}
-                          </td>
-                          <td className="px-3 py-1.5 numeric">{(t.confidence * 100).toFixed(0)}%</td>
-                          <td className={`px-3 py-1.5 ${t.trend === "up" ? "text-bull" : "text-bear"}`}>
-                            {t.trend.toUpperCase()}
-                          </td>
-                          <td className="px-3 py-1.5 numeric">{t.ema20.toFixed(4)}</td>
-                          <td className="px-3 py-1.5 numeric">{t.rsi14.toFixed(0)}</td>
-                          <td className="px-3 py-1.5 numeric">{t.atr14.toFixed(5)}</td>
-                          <td className="px-3 py-1.5 numeric">{t.barsHeld}</td>
-                          <td className="px-3 py-1.5 text-[10px]">{t.obZone ?? "—"}</td>
-                          <td className="px-3 py-1.5 text-[10px]">{t.fvgZone ?? "—"}</td>
-                          <td className="px-3 py-1.5">
-                            <Badge variant={t.outcome === "WIN" ? "default" : "destructive"} className="text-[10px] h-4 px-1.5">
-                              {t.outcome}
-                            </Badge>
-                          </td>
-                        </tr>
+                        <>
+                          <tr
+                            key={i}
+                            className={`border-t border-border/30 hover:bg-card/30 transition-colors cursor-pointer ${
+                              t.pnl > 0 ? "bg-bull-soft" : t.pnl < 0 ? "bg-bear-soft" : ""
+                            } ${expandedTradeIdx === i ? "ring-1 ring-primary/30" : ""}`}
+                            onClick={() => handleExpandTrade(i, t)}
+                          >
+                            <td className="px-3 py-1.5 text-muted-foreground">{i + 1}</td>
+                            <td className="px-3 py-1.5 numeric text-[10px]">
+                              {t.entryTimeFormatted}
+                            </td>
+                            <td className="px-3 py-1.5 numeric text-[10px]">
+                              {t.exitTimeFormatted}
+                            </td>
+                            <td className={`px-3 py-1.5 font-semibold ${t.side === "BUY" ? "text-bull" : "text-bear"}`}>
+                              {t.side}
+                            </td>
+                            <td className="px-3 py-1.5 numeric">{t.entry.toFixed(4)}</td>
+                            <td className="px-3 py-1.5 numeric">{t.exit.toFixed(4)}</td>
+                            <td className="px-3 py-1.5 numeric">${t.stake.toFixed(2)}</td>
+                            <td className={`px-3 py-1.5 numeric font-semibold ${t.pnl >= 0 ? "text-bull" : "text-bear"}`}>
+                              {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}
+                            </td>
+                            <td className={`px-3 py-1.5 numeric ${t.cumPnl >= 0 ? "text-bull" : "text-bear"}`}>
+                              {t.cumPnl >= 0 ? "+" : ""}{t.cumPnl.toFixed(2)}
+                            </td>
+                            <td className="px-3 py-1.5 numeric">
+                              ${t.balanceAtEntry.toFixed(2)}
+                            </td>
+                            <td className="px-3 py-1.5 numeric">
+                              {t.riskPct.toFixed(1)}%
+                            </td>
+                            <td className="px-3 py-1.5 numeric">{(t.confidence * 100).toFixed(0)}%</td>
+                            <td className="px-3 py-1.5 numeric">{t.barsHeld}</td>
+                            <td className="px-3 py-1.5">
+                              <Badge variant={t.outcome === "WIN" ? "default" : "destructive"} className="text-[10px] h-4 px-1.5">
+                                {t.outcome}
+                              </Badge>
+                            </td>
+                            <td className="px-3 py-1.5">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-5 w-5 p-0"
+                                onClick={(e) => { e.stopPropagation(); handleExpandTrade(i, t); }}
+                              >
+                                <ChevronDown className={`size-3 transition-transform ${expandedTradeIdx === i ? "rotate-180" : ""}`} />
+                              </Button>
+                            </td>
+                          </tr>
+                          {/* Expanded detail row */}
+                          {expandedTradeIdx === i && (
+                            <tr key={`detail-${i}`}>
+                              <td colSpan={15} className="bg-card/40 border-t border-primary/20">
+                                <TradeDetail trade={t} />
+                              </td>
+                            </tr>
+                          )}
+                        </>
                       ))}
                     </tbody>
                   </table>
@@ -758,6 +1039,92 @@ function BacktestPage() {
   );
 }
 
+/* ═══════════════════ SUBCOMPONENTS ═══════════════════ */
+
+function TradeDetail({ trade }: { trade: Trade }) {
+  return (
+    <div className="p-4 space-y-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        <MiniDetail label="Entry Price" value={trade.entry.toFixed(4)} />
+        <MiniDetail label="Exit Price" value={trade.exit.toFixed(4)} />
+        <MiniDetail label="Stop Loss" value={trade.stopLoss.toFixed(4)} tone={trade.outcome === "LOSS" && trade.exit === trade.stopLoss ? "bear" : undefined} />
+        <MiniDetail label="Take Profit" value={trade.takeProfit.toFixed(4)} tone={trade.outcome === "WIN" && trade.exit === trade.takeProfit ? "bull" : undefined} />
+        <MiniDetail label="Stake Amount" value={`$${trade.stake.toFixed(2)}`} />
+        <MiniDetail label="P&L" value={`${trade.pnl >= 0 ? "+" : ""}$${trade.pnl.toFixed(2)}`} tone={trade.pnl >= 0 ? "bull" : "bear"} />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        <MiniDetail
+          icon={<Wallet className="size-3" />}
+          label="Balance Before"
+          value={`$${trade.balanceAtEntry.toFixed(2)}`}
+        />
+        <MiniDetail
+          icon={<Wallet className="size-3" />}
+          label="Balance After"
+          value={`$${trade.balanceAtExit.toFixed(2)}`}
+          tone={trade.pnl >= 0 ? "bull" : "bear"}
+        />
+        <MiniDetail
+          icon={<Calculator className="size-3" />}
+          label="Risk % of Balance"
+          value={`${trade.riskPct.toFixed(2)}%`}
+          tone={trade.riskPct > 20 ? "bear" : trade.riskPct > 10 ? undefined : "bull"}
+        />
+        <MiniDetail label="Entry Time" value={trade.entryTimeFormatted} />
+        <MiniDetail label="Exit Time" value={trade.exitTimeFormatted} />
+        <MiniDetail label="Bars Held" value={`${trade.barsHeld}`} />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+        <MiniDetail label="Trend" value={trade.trend.toUpperCase()} tone={trade.trend === "up" ? "bull" : "bear"} />
+        <MiniDetail label="EMA20" value={trade.ema20.toFixed(4)} />
+        <MiniDetail label="RSI14" value={trade.rsi14.toFixed(1)} />
+        <MiniDetail label="ATR14" value={trade.atr14.toFixed(5)} />
+        <MiniDetail label="Confidence" value={`${(trade.confidence * 100).toFixed(0)}%`} />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Order Block</p>
+          <p className="text-xs font-mono">{trade.obZone ?? "None"}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Fair Value Gap</p>
+          <p className="text-xs font-mono">{trade.fvgZone ?? "None"}</p>
+        </div>
+      </div>
+
+      {/* SL/TP Distance visualization */}
+      <div>
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+          SL/TP Distance from Entry
+        </p>
+        <div className="flex items-center gap-3">
+          <div className="flex-1 bg-card rounded-full h-3 overflow-hidden border border-border/50 relative">
+            {/* SL marker */}
+            <div className="absolute top-0 left-0 h-full bg-bear/30" style={{
+              width: `${Math.min(100, (trade.distanceToSL / (trade.distanceToSL + trade.distanceToTP)) * 100)}%`
+            }} />
+            {/* Entry marker */}
+            <div className="absolute top-0 left-1/2 w-0.5 h-full bg-foreground z-10" />
+            {/* TP marker */}
+            <div className="absolute top-0 right-0 h-full bg-bull/30" style={{
+              width: `${Math.min(100, (trade.distanceToTP / (trade.distanceToSL + trade.distanceToTP)) * 100)}%`
+            }} />
+          </div>
+          <span className="text-[10px] text-bear shrink-0">
+            SL: {trade.distanceToSL.toFixed(4)}
+          </span>
+          <span className="text-[10px] text-bull shrink-0">
+            TP: {trade.distanceToTP.toFixed(4)}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MiniIndicator({
   label,
   value,
@@ -777,6 +1144,34 @@ function MiniIndicator({
       </div>
       <p
         className={`text-lg font-semibold numeric ${
+          tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""
+        }`}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function MiniDetail({
+  label,
+  value,
+  tone,
+  icon,
+}: {
+  label: string;
+  value: string;
+  tone?: "bull" | "bear";
+  icon?: React.ReactNode;
+}) {
+  return (
+    <div className="bg-card/50 rounded-lg px-2.5 py-1.5 border border-border/60">
+      <div className="flex items-center gap-1 text-muted-foreground mb-0.5">
+        {icon && <span className="text-primary">{icon}</span>}
+        <span className="text-[10px] uppercase tracking-wider">{label}</span>
+      </div>
+      <p
+        className={`text-sm font-semibold numeric ${
           tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""
         }`}
       >

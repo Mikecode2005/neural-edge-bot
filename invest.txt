@@ -1,0 +1,178 @@
+14:37:32
+SCAN
+NONE
+75%
+—
+—
+[Setup Class B] The setup lacks a confirmed Break of Structure (BOS) or Change o…
+Entry Price
+
+5004.4210
+
+Stop Loss
+
+—
+
+Take Profit
+
+—
+
+Duration
+
+—
+
+Trend
+
+UP
+
+EMA 20
+
+5005.3378
+
+EMA 50
+
+5004.8312
+
+RSI 14
+
+43.7
+
+ATR 14
+
+0.87429
+
+Risk Check
+
+N/A (no trade)
+
+Order Block
+
+None
+
+Fair Value Gap
+
+None
+
+AI Reasoning
+
+[Setup Class B] The setup lacks a confirmed Break of Structure (BOS) or Change of Character (CHOCH) in trade direction. The 15m trend is down, but the 5m structure is bullish, which creates a moderate setup. However, the liquidity sweep and displacement are not present, and the RSI is within a neutral range, making it a moderate setup.
+
+
+14:36:32
+SCAN
+NONE
+75%
+—
+—
+[Setup Class B] The setup lacks a liquidity sweep and displacement. The recent c…
+Entry Price
+
+5004.5930
+
+Stop Loss
+
+—
+
+Take Profit
+
+—
+
+Duration
+
+—
+
+Trend
+
+UP
+
+EMA 20
+
+5005.4591
+
+EMA 50
+
+5004.8577
+
+RSI 14
+
+43.3
+
+ATR 14
+
+0.86021
+
+Risk Check
+
+N/A (no trade)
+
+Order Block
+
+None
+
+Fair Value Gap
+
+None
+
+AI Reasoning
+
+[Setup Class B] The setup lacks a liquidity sweep and displacement. The recent candles show a strong bullish momentum candle, but the 15m trend is down, and the 5m structure is bullish, which is a minor confluence. The RSI is below 65, and the ATR is within the normal range, but the HTF alignment is not fully confirmed.
+
+
+14:35:32
+SCAN
+NONE
+75%
+—
+—
+[Setup Class B] The setup lacks HTF alignment as the 15m trend is down while the…
+Entry Price
+
+5004.6590
+
+Stop Loss
+
+—
+
+Take Profit
+
+—
+
+Duration
+
+—
+
+Trend
+
+UP
+
+EMA 20
+
+5005.5408
+
+EMA 50
+
+5004.8645
+
+RSI 14
+
+41.8
+
+ATR 14
+
+0.86400
+
+Risk Check
+
+N/A (no trade)
+
+Order Block
+
+None
+
+Fair Value Gap
+
+None
+
+AI Reasoning
+
+[Setup Class B] The setup lacks HTF alignment as the 15m trend is down while the 1m trend is up. The RSI is within a neutral range, and the displacement is present, but the overall structure does not align well.
