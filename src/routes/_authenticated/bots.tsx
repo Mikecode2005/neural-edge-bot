@@ -875,7 +875,7 @@ function BotsPage() {
           )}
         </div>
 
-        {/* ── MT5 Connection Guide ── */}
+        {/* ── MT5 Direct & Deriv Bot Demo Section ── */}
         <div className="glass rounded-xl overflow-hidden">
           <button
             onClick={() => setShowMt5Guide(!showMt5Guide)}
@@ -883,8 +883,8 @@ function BotsPage() {
           >
             <div className="flex items-center gap-2">
               <ExternalLink className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold">Connect to MT5 from Deriv</h2>
-              <Badge variant="outline" className="text-[10px]">Guide</Badge>
+              <h2 className="text-sm font-semibold">MT5 Direct & Deriv Bot Demo</h2>
+              <Badge variant="default" className="text-[10px]">NEW</Badge>
             </div>
             {showMt5Guide ? (
               <ChevronUp className="size-4 text-muted-foreground" />
@@ -895,7 +895,27 @@ function BotsPage() {
 
           {showMt5Guide && (
             <div className="px-4 pb-5 border-t border-border space-y-4 pt-4">
-              {/* Step 1 */}
+              {/* Quick link to MT5 Direct page */}
+              <div className="flex items-start gap-3 bg-primary/5 border border-primary/20 rounded-lg p-4">
+                <Zap className="size-5 text-primary shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold">Try the new MT5 Direct Page</p>
+                  <p className="text-xs text-muted-foreground">
+                    Connect directly to MetaTrader 5 from within the app — place orders, view positions,
+                    and manage your MT5 account. No Python bridge needed.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    className="mt-2 gap-1"
+                    onClick={() => window.location.href = "/mt5-direct"}
+                  >
+                    <ExternalLink className="size-3.5" /> Open MT5 Direct
+                  </Button>
+                </div>
+              </div>
+
+              {/* Step 1 — Get Credentials */}
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold flex items-center gap-2">
                   <span className="size-5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center justify-center">1</span>
@@ -904,91 +924,90 @@ function BotsPage() {
                 <div className="ml-7 text-xs text-muted-foreground space-y-1.5 leading-relaxed">
                   <p>1. Log into <a href="https://app.deriv.com" target="_blank" rel="noopener noreferrer" className="text-primary underline">app.deriv.com</a></p>
                   <p>2. Go to <strong>Trader's Hub</strong> → under "CFDs"</p>
-                  <p>3. Click <strong>"Get"</strong> next to an MT5 account (Synthetic Indices or Financial)</p>
-                  <p>4. Set a password. Deriv will create your MT5 login ID + server address</p>
-                  <p>5. Note your <strong>Login ID</strong>, <strong>Password</strong>, and <strong>Server</strong> (e.g., <code className="bg-card px-1 rounded">Deriv-Server</code>)</p>
+                  <p>3. Click <strong>"Get"</strong> next to a demo MT5 account (Synthetic Indices or Financial)</p>
+                  <p>4. Note your <strong>Login ID</strong>, <strong>Password</strong>, and <strong>Server</strong></p>
+                  <p>5. Add them to <code className="bg-card px-1 rounded">.env</code> as <code className="bg-card px-1 rounded">MT5_ACCOUNT_LOGIN</code>, <code className="bg-card px-1 rounded">MT5_ACCOUNT_PASSWORD</code>, <code className="bg-card px-1 rounded">MT5_ACCOUNT_SERVER</code></p>
                 </div>
               </div>
 
-              {/* Step 2 */}
+              {/* Step 2 — Node SDK (Primary) */}
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold flex items-center gap-2">
-                  <span className="size-5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center justify-center">2</span>
-                  Connect via Python (MetaTrader5 Package)
+                  <span className="size-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold flex items-center justify-center">2</span>
+                  Connect via Node.js SDK <Badge variant="default" className="text-[10px]">Primary</Badge>
+                </h3>
+                <div className="ml-7 text-xs text-muted-foreground space-y-1.5 leading-relaxed">
+                  <p>The <code className="bg-card px-1 rounded">metatrader5-sdk</code> npm package connects to the MT5 Web API
+                  without needing the MT5 terminal installed. Just configure credentials in .env and click
+                  <strong> "Connect"</strong> on the MT5 Direct page.</p>
+                </div>
+              </div>
+
+              {/* Step 3 — Python Bridge (Fallback) */}
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold flex items-center gap-2">
+                  <span className="size-5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-bold flex items-center justify-center">3</span>
+                  Python Bridge Fallback <Badge variant="outline" className="text-[10px]">Fallback</Badge>
                 </h3>
                 <div className="ml-7">
                   <div className="bg-card rounded-lg p-3 border border-border text-xs font-mono overflow-x-auto">
-                    <pre className="text-muted-foreground">{`# Install the package
-pip install MetaTrader5
+                    <pre className="text-muted-foreground">{`# Install dependencies
+pip install MetaTrader5 fastapi uvicorn websockets
 
-# Connect script
+# Create bridge server (run.py)
+from fastapi import FastAPI
+from pydantic import BaseModel
 import MetaTrader5 as mt5
+import uvicorn
 
-# Initialize MT5
-if not mt5.initialize():
-    print("MT5 init failed:", mt5.last_error())
-    quit()
+app = FastAPI()
 
-# Login with your Deriv MT5 credentials
-authorized = mt5.login(
-    login=YOUR_MT5_LOGIN_ID,      # e.g. 40123456
-    password="YOUR_MT5_PASSWORD",
-    server="Deriv-Server"          # from Deriv dashboard
-)
+class Creds(BaseModel):
+    login: int
+    password: str
+    server: str
 
-if authorized:
-    account_info = mt5.account_info()
-    print(f"Balance: {account_info.balance}")
-    print(f"Equity: {account_info.equity}")
-    print(f"Server: {account_info.server}")
-else:
-    print("Login failed:", mt5.last_error())
+@app.post("/initialize")
+async def init(creds: Creds):
+    if not mt5.initialize():
+        return {"status": "error", "detail": mt5.last_error()}
+    authorized = mt5.login(creds.login, creds.password, creds.server)
+    if not authorized:
+        return {"status": "error", "detail": mt5.last_error()}
+    return {"status": "ok"}
 
-# Place a trade
-request = {
-    "action": mt5.TRADE_ACTION_DEAL,
-    "symbol": "Volatility 10 Index",
-    "volume": 0.01,
-    "type": mt5.ORDER_TYPE_BUY,
-    "price": mt5.symbol_info_tick("Volatility 10 Index").ask,
-    "deviation": 20,
-    "magic": 234000,
-    "comment": "NeuralEdge Bot",
-    "type_time": mt5.ORDER_TIME_GTC,
-    "type_filling": mt5.ORDER_FILLING_IOC,
-}
-result = mt5.order_send(request)
-print(result)
-
-mt5.shutdown()`}</pre>
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8765)`}</pre>
                   </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Set <code className="bg-card px-1 rounded">MT5_LIB_MODE=python-bridge</code> in .env to use this path.
+                  </p>
                 </div>
               </div>
 
-              {/* Step 3 */}
+              {/* Architecture flow */}
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold flex items-center gap-2">
-                  <span className="size-5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center justify-center">3</span>
-                  Integration Architecture
+                  <span className="size-5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center justify-center">4</span>
+                  Trading Architecture
                 </h3>
                 <div className="ml-7 text-xs text-muted-foreground space-y-1.5 leading-relaxed">
-                  <p>Currently, the bot trades via <strong>Deriv's WebSocket API</strong> directly (supports synthetic indices like R_10, R_25, etc.).</p>
-                  <p>For MT5 integration, the path would be:</p>
                   <div className="bg-card rounded-lg p-3 border border-border my-2">
-                    <p className="font-mono text-center">
-                      Bot Decision → Database → Python Bridge Service → MT5 API → Deriv MT5 Server
+                    <p className="font-mono text-center text-xs">
+                      Bot Decision → AI Analysis → MT5 Direct API → MT5 Broker Server
                     </p>
                   </div>
-                  <p>The Python bridge would poll the <code className="bg-card px-1 rounded">ai_decisions</code> table for new signals, then execute them through the MT5 API.</p>
+                  <p>These bots use <strong>Deriv's WebSocket API</strong> for synthetic indices (R_10, R_25, etc.). 
+                  The <strong>MT5 Direct</strong> page provides parallel access to MT5 accounts for CFDs & forex trading.</p>
+                  <div className="flex items-start gap-2 bg-primary/5 border border-primary/20 rounded-lg p-3 mt-2">
+                    <Info className="size-4 text-primary shrink-0 mt-0.5" />
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      <strong className="text-foreground">Demo Mode:</strong> When the account type is set to 
+                      <strong> "Local Simulated"</strong>, trades are executed in-memory without real money. 
+                      Use this to test strategies before switching to Deriv demo or real accounts.
+                    </p>
+                  </div>
                 </div>
-              </div>
-
-              <div className="ml-7 flex items-start gap-2 bg-primary/5 border border-primary/20 rounded-lg p-3">
-                <Info className="size-4 text-primary shrink-0 mt-0.5" />
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  <strong className="text-foreground">Note:</strong> MT5 integration requires running a Python service on your machine (Windows only — MT5 terminal is Windows-only). 
-                  The current WebSocket-based approach works cross-platform and doesn't need MT5 installed.
-                </p>
               </div>
             </div>
           )}

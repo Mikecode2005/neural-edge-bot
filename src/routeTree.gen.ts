@@ -14,6 +14,7 @@ import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthDerivCallbackRouteImport } from './routes/auth.deriv-callback'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
+import { Route as AuthenticatedMt5DirectRouteImport } from './routes/_authenticated/mt5-direct'
 import { Route as AuthenticatedMemoryRouteImport } from './routes/_authenticated/memory'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedChatRouteImport } from './routes/_authenticated/chat'
@@ -44,6 +45,11 @@ const ApiChatRoute = ApiChatRouteImport.update({
   id: '/api/chat',
   path: '/api/chat',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedMt5DirectRoute = AuthenticatedMt5DirectRouteImport.update({
+  id: '/mt5-direct',
+  path: '/mt5-direct',
+  getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedMemoryRoute = AuthenticatedMemoryRouteImport.update({
   id: '/memory',
@@ -85,6 +91,7 @@ export interface FileRoutesByFullPath {
   '/chat': typeof AuthenticatedChatRouteWithChildren
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/memory': typeof AuthenticatedMemoryRoute
+  '/mt5-direct': typeof AuthenticatedMt5DirectRoute
   '/api/chat': typeof ApiChatRoute
   '/auth/deriv-callback': typeof AuthDerivCallbackRoute
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
@@ -97,6 +104,7 @@ export interface FileRoutesByTo {
   '/chat': typeof AuthenticatedChatRouteWithChildren
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/memory': typeof AuthenticatedMemoryRoute
+  '/mt5-direct': typeof AuthenticatedMt5DirectRoute
   '/api/chat': typeof ApiChatRoute
   '/auth/deriv-callback': typeof AuthDerivCallbackRoute
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
@@ -111,6 +119,7 @@ export interface FileRoutesById {
   '/_authenticated/chat': typeof AuthenticatedChatRouteWithChildren
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/memory': typeof AuthenticatedMemoryRoute
+  '/_authenticated/mt5-direct': typeof AuthenticatedMt5DirectRoute
   '/api/chat': typeof ApiChatRoute
   '/auth/deriv-callback': typeof AuthDerivCallbackRoute
   '/_authenticated/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
@@ -125,6 +134,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/dashboard'
     | '/memory'
+    | '/mt5-direct'
     | '/api/chat'
     | '/auth/deriv-callback'
     | '/chat/$threadId'
@@ -137,6 +147,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/dashboard'
     | '/memory'
+    | '/mt5-direct'
     | '/api/chat'
     | '/auth/deriv-callback'
     | '/chat/$threadId'
@@ -150,6 +161,7 @@ export interface FileRouteTypes {
     | '/_authenticated/chat'
     | '/_authenticated/dashboard'
     | '/_authenticated/memory'
+    | '/_authenticated/mt5-direct'
     | '/api/chat'
     | '/auth/deriv-callback'
     | '/_authenticated/chat/$threadId'
@@ -198,6 +210,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/chat'
       preLoaderRoute: typeof ApiChatRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/mt5-direct': {
+      id: '/_authenticated/mt5-direct'
+      path: '/mt5-direct'
+      fullPath: '/mt5-direct'
+      preLoaderRoute: typeof AuthenticatedMt5DirectRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/memory': {
       id: '/_authenticated/memory'
@@ -261,6 +280,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedChatRoute: typeof AuthenticatedChatRouteWithChildren
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedMemoryRoute: typeof AuthenticatedMemoryRoute
+  AuthenticatedMt5DirectRoute: typeof AuthenticatedMt5DirectRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -269,6 +289,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedChatRoute: AuthenticatedChatRouteWithChildren,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedMemoryRoute: AuthenticatedMemoryRoute,
+  AuthenticatedMt5DirectRoute: AuthenticatedMt5DirectRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =
@@ -293,3 +314,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
