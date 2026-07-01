@@ -37,6 +37,7 @@ export const startBot = createServerFn({ method: "POST" })
         min_stake_per_trade: data.min_stake_per_trade,
         strategy_mode: data.strategy_mode,
         account_balance: data.account_balance,
+        server_loop_enabled: true,
         status: "running",
       } as any)
       .select()
@@ -71,6 +72,64 @@ export const listBots = createServerFn({ method: "GET" })
       .limit(50);
     if (error) throw new Error(error.message);
     return data ?? [];
+  });
+
+export const listBotActivity = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        bot_id: z.string().uuid(),
+        limit: z.number().int().min(1).max(200).default(100),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: rows, error } = await (supabaseAdmin as any)
+      .from("bot_activity")
+      .select("*")
+      .eq("user_id", context.userId)
+      .eq("bot_run_id", data.bot_id)
+      .order("created_at", { ascending: false })
+      .limit(data.limit);
+    if (error) throw new Error(error.message);
+    return rows ?? [];
+  });
+
+export const listOpenBotPositions = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z.object({ bot_id: z.string().uuid() }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: rows, error } = await (supabaseAdmin as any)
+      .from("bot_positions")
+      .select("*")
+      .eq("user_id", context.userId)
+      .eq("bot_run_id", data.bot_id)
+      .eq("status", "open")
+      .order("opened_at", { ascending: false });
+    if (error) throw new Error(error.message);
+    return rows ?? [];
+  });
+
+export const runBotServerTick = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: bot, error } = await supabaseAdmin
+      .from("bot_runs")
+      .select("id")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!bot) throw new Error("Bot not found");
+    const { processBotTick } = await import("./bot-loop.server");
+    return processBotTick(data.id);
   });
 
 export const tickBot = createServerFn({ method: "POST" })
@@ -120,7 +179,7 @@ export const updateBotBalance = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("bot_runs")
-      .update({ account_balance: data.account_balance, total_pnl: 0, total_trades: 0 }) // reset statistics when updating balance
+      .update({ account_balance: data.account_balance, total_pnl: 0, total_trades: 0, wins: 0, losses: 0, locked_stake: 0, floating_pnl: 0 } as any) // reset statistics when updating balance
       .eq("id", data.id)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
@@ -140,7 +199,7 @@ export const resetBotStats = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("bot_runs")
-      .update({ total_pnl: 0, total_trades: 0, last_error: null })
+      .update({ total_pnl: 0, total_trades: 0, wins: 0, losses: 0, locked_stake: 0, floating_pnl: 0, last_error: null } as any)
       .eq("id", data.id)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);

@@ -34,12 +34,16 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Toaster } from "@/components/ui/sonner";
 
-import { startBot, stopBot, listBots, tickBot, updateBotBalance, resetBotStats } from "@/lib/bots/bots.functions";
-import { getActiveDerivToken } from "@/lib/deriv/connections.functions";
-import { checkRisk, logTradeOpen, logTradeClose } from "@/lib/trading/execute.functions";
-import { recordOutcome, analyzeMarket } from "@/lib/ai/qwen.functions";
-import { getDerivWS } from "@/lib/deriv/ws";
-import { analyze } from "@/lib/ob-fvg";
+import {
+  startBot,
+  stopBot,
+  listBots,
+  updateBotBalance,
+  resetBotStats,
+  listBotActivity,
+  listOpenBotPositions,
+  runBotServerTick,
+} from "@/lib/bots/bots.functions";
 import { DERIV_SYMBOLS } from "@/lib/deriv-ws";
 
 export const Route = createFileRoute("/_authenticated/bots")({
@@ -60,10 +64,28 @@ interface BotRow {
   strategy_mode?: "qwen" | "ob-fvg"; // fallback: "qwen"
   total_trades: number;
   total_pnl: number;
+  locked_stake?: number;
+  floating_pnl?: number;
+  wins?: number;
+  losses?: number;
+  current_price?: number | null;
+  last_server_loop_at?: string | null;
   last_tick_at: string | null;
   last_error: string | null;
   market_mode: string;
   account_balance?: number;
+}
+
+interface OpenBotPosition {
+  id: string;
+  direction: "CALL" | "PUT";
+  stake: number;
+  entry_price: number;
+  current_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  floating_pnl: number;
+  opened_at: string;
 }
 
 interface ActivityEntry {
@@ -90,53 +112,35 @@ interface ActivityEntry {
   atr14: number | null;
 }
 
-// Track active simulated trades in memory: mapped by botId -> trade details
-interface SimulatedTrade {
-  tradeId: string;
-  direction: "CALL" | "PUT";
-  entryPrice: number;
-  takeProfit: number;
-  stopLoss: number;
-  stake: number;
-  candlesHeld: number;
-  openedAt: number;
-}
-
 function BotsPage() {
   const fnStart = useServerFn(startBot);
   const fnStop = useServerFn(stopBot);
   const fnList = useServerFn(listBots);
-  const fnTick = useServerFn(tickBot);
-  const fnGetToken = useServerFn(getActiveDerivToken);
-  const fnCheckRisk = useServerFn(checkRisk);
-  const fnLogOpen = useServerFn(logTradeOpen);
-  const fnLogClose = useServerFn(logTradeClose);
-  const fnRecordOutcome = useServerFn(recordOutcome);
   const fnUpdateBalance = useServerFn(updateBotBalance);
   const fnResetStats = useServerFn(resetBotStats);
-  const fnAnalyzeMarket = useServerFn(analyzeMarket);
+  const fnActivity = useServerFn(listBotActivity);
+  const fnOpenPositions = useServerFn(listOpenBotPositions);
+  const fnServerTick = useServerFn(runBotServerTick);
 
   const [bots, setBots] = useState<BotRow[]>([]);
   const [form, setForm] = useState({
     symbol: "R_10",
     account_type: "simulated" as "simulated" | "demo" | "real",
     interval_seconds: 60,
-    min_confidence: 0.7,
+    min_confidence: 0.65,
     max_stake_per_trade: 1,
     min_stake_per_trade: 0.35,
-    strategy_mode: "qwen" as "qwen" | "ob-fvg",
+    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg",
     account_balance: 1000,
   });
 
   // Activity logs per bot
   const [activityLogs, setActivityLogs] = useState<Map<string, ActivityEntry[]>>(new Map());
+  const [openPositions, setOpenPositions] = useState<Map<string, OpenBotPosition[]>>(new Map());
   const [expandedBots, setExpandedBots] = useState<Set<string>>(new Set());
   const [editingBalance, setEditingBalance] = useState<string | null>(null);
   const [newBalance, setNewBalance] = useState("");
   const [showMt5Guide, setShowMt5Guide] = useState(false);
-
-  // Simulated trades in-memory tracker
-  const [simulatedTrades, setSimulatedTrades] = useState<Map<string, SimulatedTrade>>(new Map());
 
   const loopsRef = useRef<Map<string, number>>(new Map());
   const logIdRef = useRef(0);
@@ -151,7 +155,62 @@ function BotsPage() {
     });
   }, []);
 
-  const load = async () => setBots((await fnList()) as BotRow[]);
+  const mapDbActivity = (row: any): ActivityEntry => ({
+    id: row.id,
+    timestamp: new Date(row.created_at).getTime(),
+    action: row.action,
+    symbol: row.symbol,
+    direction: row.direction ?? "—",
+    confidence: Number(row.confidence ?? 0),
+    entryPrice: row.entry_price == null ? null : Number(row.entry_price),
+    stake: row.stake == null ? null : Number(row.stake),
+    stopLoss: row.stop_loss == null ? null : Number(row.stop_loss),
+    takeProfit: row.take_profit == null ? null : Number(row.take_profit),
+    duration: null,
+    pnl: row.pnl == null ? null : Number(row.pnl),
+    reasoning: row.reasoning,
+    obZone: row.ob_zone ?? null,
+    fvgZone: row.fvg_zone ?? null,
+    riskCheck: row.risk_check ?? null,
+    trend: row.indicators?.trend ?? null,
+    ema20: row.indicators?.ema20 == null ? null : Number(row.indicators.ema20),
+    ema50: row.indicators?.ema50 == null ? null : Number(row.indicators.ema50),
+    rsi14: row.indicators?.rsi14 == null ? null : Number(row.indicators.rsi14),
+    atr14: row.indicators?.atr14 == null ? null : Number(row.indicators.atr14),
+  });
+
+  const refreshBotState = async (botId: string) => {
+    const [rows, positions] = await Promise.all([
+      fnActivity({ data: { bot_id: botId, limit: 100 } }) as Promise<any[]>,
+      fnOpenPositions({ data: { bot_id: botId } }) as Promise<any[]>,
+    ]);
+    setActivityLogs((prev) => {
+      const next = new Map(prev);
+      next.set(botId, rows.map(mapDbActivity));
+      return next;
+    });
+    setOpenPositions((prev) => {
+      const next = new Map(prev);
+      next.set(botId, positions.map((p) => ({
+        id: p.id,
+        direction: p.direction,
+        stake: Number(p.stake ?? 0),
+        entry_price: Number(p.entry_price ?? 0),
+        current_price: p.current_price == null ? null : Number(p.current_price),
+        stop_loss: p.stop_loss == null ? null : Number(p.stop_loss),
+        take_profit: p.take_profit == null ? null : Number(p.take_profit),
+        floating_pnl: Number(p.floating_pnl ?? 0),
+        opened_at: p.opened_at,
+      })));
+      return next;
+    });
+  };
+
+  const load = async () => {
+    const rows = (await fnList()) as BotRow[];
+    setBots(rows);
+    await Promise.all(rows.slice(0, 20).map((b) => refreshBotState(b.id).catch(() => {})));
+  };
   useEffect(() => {
     load();
     return () => {
@@ -177,366 +236,20 @@ function BotsPage() {
 
   const runOneTick = async (bot: BotRow) => {
     const ts = Date.now();
-    const isSimulated = bot.market_mode === "simulated";
-    const currentBalance = (bot.account_balance ?? 1000) + (bot.total_pnl ?? 0);
-
     try {
-      const ws = getDerivWS();
-      const candles = await ws.fetchCandles(bot.symbol, 60, 200);
-      if (candles.length < 30) {
-        addLog(bot.id, {
-          timestamp: ts, action: "SKIP", symbol: bot.symbol, direction: "—",
-          confidence: 0, entryPrice: null, stake: null, stopLoss: null,
-          takeProfit: null, duration: null, pnl: null,
-          reasoning: "Not enough candles for analysis (<30)",
-          obZone: null, fvgZone: null, riskCheck: null,
-          trend: null, ema20: null, ema50: null, rsi14: null, atr14: null,
-        });
-        return;
-      }
-      const analysis = analyze(candles);
-      const price = candles.at(-1)!.close;
-
-      // ── SIMULATED TRADE SETTLEMENT ENGINE ──
-      if (isSimulated && simulatedTrades.has(bot.id)) {
-        const activeSim = simulatedTrades.get(bot.id)!;
-        const exitPrice = price;
-        const dirSign = activeSim.direction === "CALL" ? 1 : -1;
-        const hitTP = activeSim.direction === "CALL" ? exitPrice >= activeSim.takeProfit : exitPrice <= activeSim.takeProfit;
-        const hitSL = activeSim.direction === "CALL" ? exitPrice <= activeSim.stopLoss : exitPrice >= activeSim.stopLoss;
-        const maxBarsReached = activeSim.candlesHeld >= 5; // typical hold limit
-
-        if (hitTP || hitSL || maxBarsReached) {
-          const won = hitTP || (!hitSL && (exitPrice - activeSim.entryPrice) * dirSign > 0);
-          const pnl = won ? activeSim.stake * 0.85 : -activeSim.stake;
-          const outcome = won ? "win" : "loss";
-
-          addLog(bot.id, {
-            timestamp: Date.now(), action: "EXIT", symbol: bot.symbol,
-            direction: activeSim.direction, confidence: 0,
-            entryPrice: activeSim.entryPrice, stake: activeSim.stake,
-            stopLoss: activeSim.stopLoss, takeProfit: activeSim.takeProfit,
-            duration: `${activeSim.candlesHeld}m`,
-            pnl,
-            reasoning: `Simulated Exit: ${outcome.toUpperCase()} at ${exitPrice.toFixed(4)}. SL/TP boundary touched. P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
-            obZone: null, fvgZone: null,
-            riskCheck: `Simulated settlement`,
-            trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-            rsi14: analysis.rsi14, atr14: analysis.atr14,
-          });
-
-          await fnLogClose({ data: { trade_id: activeSim.tradeId, exit_price: exitPrice, pnl, outcome } });
-          await fnTick({ data: { id: bot.id, executed: true, pnl_delta: pnl } });
-          
-          setSimulatedTrades((prev) => {
-            const next = new Map(prev);
-            next.delete(bot.id);
-            return next;
-          });
-          load();
-          return;
-        } else {
-          // Increment bar count held
-          setSimulatedTrades((prev) => {
-            const next = new Map(prev);
-            const t = next.get(bot.id);
-            if (t) t.candlesHeld += 1;
-            return next;
-          });
-        }
-      }
-
-      // Check consecutive loss pause protection
-      const logs = activityLogs.get(bot.id) ?? [];
-      const exitTrades = logs.filter((l) => l.action === "EXIT");
-      if (exitTrades.length >= 3) {
-        const lastThreeLosing = exitTrades.slice(0, 3).every((t) => (t.pnl ?? 0) < 0);
-        if (lastThreeLosing && bot.status === "running") {
-          addLog(bot.id, {
-            timestamp: ts, action: "PROTECTION", symbol: bot.symbol, direction: "—",
-            confidence: 0, entryPrice: null, stake: null, stopLoss: null,
-            takeProfit: null, duration: null, pnl: null,
-            reasoning: "Consecutive loss protection activated (3 losses). Pausing bot.",
-            obZone: null, fvgZone: null, riskCheck: "Active",
-            trend: null, ema20: null, ema50: null, rsi14: null, atr14: null,
-          });
-          await fnStop({ data: { id: bot.id } });
-          toast.warning("Bot paused due to consecutive loss protection");
-          load();
-          return;
-        }
-      }
-
-      // Build OB/FVG info
-      const obInfo = analysis.activeOB
-        ? `${analysis.activeOB.kind} OB [${analysis.activeOB.bottom.toFixed(4)}, ${analysis.activeOB.top.toFixed(4)}]`
-        : "None";
-      const fvgInfo = analysis.activeFVG
-        ? `${analysis.activeFVG.kind} FVG [${analysis.activeFVG.bottom.toFixed(4)}, ${analysis.activeFVG.top.toFixed(4)}]`
-        : "None";
-
-      // Determine AI decision based on strategy mode
-      const isObFvgMode = (bot.strategy_mode ?? "qwen") === "ob-fvg";
-      let ai: any = null;
-      
-      if (isObFvgMode) {
-        // ── OB+FVG STRATEGY MODE ──
-        // Use the local analysis directly without calling Qwen AI
-        if (analysis.decision === "WAIT" || analysis.confidence < bot.min_confidence) {
-          addLog(bot.id, {
-            timestamp: ts, action: "SCAN", symbol: bot.symbol,
-            direction: analysis.decision === "BUY" ? "CALL" : "PUT", confidence: analysis.confidence,
-            entryPrice: price, stake: null,
-            stopLoss: analysis.sl ?? null, takeProfit: analysis.tp ?? null,
-            duration: "5t",
-            pnl: null,
-            reasoning: `OB+FVG Analysis: ${analysis.rationale} | Confidence ${(analysis.confidence * 100).toFixed(0)}% below threshold ${(bot.min_confidence * 100).toFixed(0)}%`,
-            obZone: obInfo, fvgZone: fvgInfo,
-            riskCheck: "N/A (no trade)",
-            trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-            rsi14: analysis.rsi14, atr14: analysis.atr14,
-          });
-          await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0 } });
-          return;
-        }
-        
-        ai = {
-          direction: analysis.decision === "BUY" ? "CALL" : "PUT",
-          confidence: analysis.confidence,
-          stake: bot.max_stake_per_trade,
-          stop_loss: analysis.sl,
-          take_profit: analysis.tp,
-          reasoning: analysis.rationale,
-          decision_id: null,
-          duration: 5,
-          duration_unit: "t" as const,
-        };
-      } else {
-        // ── QWEN AI MODE ──
-        ai = await fnAnalyzeMarket({
-          data: {
-            symbol: bot.symbol,
-            timeframe: bot.timeframe,
-            candles: candles.slice(-60),
-            ob_zones: [],
-            fvg_zones: [],
-            current_price: price,
-            balance: currentBalance,
-          }
-        });
-
-        if (ai.direction === "NONE" || ai.confidence < bot.min_confidence) {
-          addLog(bot.id, {
-            timestamp: ts, action: "SCAN", symbol: bot.symbol,
-            direction: ai.direction, confidence: ai.confidence,
-            entryPrice: price, stake: null,
-            stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-            duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : null,
-            pnl: null,
-            reasoning: ai.reasoning || `Confidence ${(ai.confidence * 100).toFixed(0)}% below threshold ${(bot.min_confidence * 100).toFixed(0)}%`,
-            obZone: obInfo, fvgZone: fvgInfo,
-            riskCheck: "N/A (no trade)",
-            trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-            rsi14: analysis.rsi14, atr14: analysis.atr14,
-          });
-          await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0 } });
-          return;
-        }
-      }
-
-      // ── BALANCE-AWARE STAKE SIZING ──
-      // Stake is bounded by: min 0.35, max_stake_per_trade setting, and cannot exceed 50% of current balance
-      const minStake = bot.min_stake_per_trade ?? 0.35;
-      let stake = Math.max(minStake, Math.min(ai.stake ?? 1, bot.max_stake_per_trade));
-      
-      // Balance safety: stake cannot exceed 50% of current available balance
-      const maxAllowedStake = Math.min(bot.max_stake_per_trade, currentBalance * 0.5);
-      if (stake > maxAllowedStake) {
-        stake = Math.max(0.35, maxAllowedStake);
-      }
-      // Final safety: stake can never exceed current balance
-      if (stake > currentBalance) {
-        stake = Math.max(0.35, currentBalance * 0.5);
-      }
-
-      const risk = (await fnCheckRisk({
-        data: { proposed_stake: stake, account_type: "demo" },
-      })) as { ok: boolean; reason?: string };
-
-      if (!risk.ok) {
-        addLog(bot.id, {
-          timestamp: ts, action: "SKIP", symbol: bot.symbol,
-          direction: ai.direction, confidence: ai.confidence,
-          entryPrice: price, stake,
-          stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-          duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : null,
-          pnl: null,
-          reasoning: `Risk gate blocked: ${risk.reason}`,
-          obZone: obInfo, fvgZone: fvgInfo,
-          riskCheck: `❌ ${risk.reason}`,
-          trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-          rsi14: analysis.rsi14, atr14: analysis.atr14,
-        });
-        await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0, error: risk.reason } });
-        return;
-      }
-
-      // ── EXECUTION PATH ──
-      if (isSimulated) {
-        // Simulated execution (Paper trade offline)
-        const mockContractId = `sim-${Date.now()}`;
-        const finalSL = ai.stop_loss ?? (ai.direction === "CALL" ? price - 1.0 * analysis.atr14 : price + 1.0 * analysis.atr14);
-        const finalTP = ai.take_profit ?? (ai.direction === "CALL" ? price + 1.5 * analysis.atr14 : price - 1.5 * analysis.atr14);
-
-        addLog(bot.id, {
-          timestamp: ts, action: "ENTRY", symbol: bot.symbol,
-          direction: ai.direction, confidence: ai.confidence,
-          entryPrice: price, stake,
-          stopLoss: finalSL, takeProfit: finalTP,
-          duration: "Simulated", pnl: null,
-          reasoning: ai.reasoning || "Paper trade entry",
-          obZone: obInfo, fvgZone: fvgInfo,
-          riskCheck: `✅ Passed (Simulated $${stake.toFixed(2)})`,
-          trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-          rsi14: analysis.rsi14, atr14: analysis.atr14,
-        });
-
-        const tradeRow = (await fnLogOpen({
-          data: {
-            decision_id: ai.decision_id,
-            symbol: bot.symbol,
-            side: ai.direction,
-            stake,
-            contract_id: `simulated-${mockContractId}`,
-            buy_price: price,
-            payout: stake * 1.85,
-            take_profit: finalTP,
-            stop_loss: finalSL,
-            account_type: "demo",
-          },
-        })) as { id: string };
-
-        setSimulatedTrades((prev) => {
-          const next = new Map(prev);
-          next.set(bot.id, {
-            tradeId: tradeRow.id,
-            direction: ai.direction as "CALL" | "PUT",
-            entryPrice: price,
-            takeProfit: finalTP,
-            stopLoss: finalSL,
-            stake,
-            candlesHeld: 0,
-            openedAt: ts,
-          });
-          return next;
-        });
-
-      } else {
-        // Live Deriv Execution (Requires login token)
-        const tok = (await fnGetToken()) as { token: string; currency: string; loginid: string; account_type: string } | null;
-        if (!tok || tok.account_type !== bot.account_type) {
-          const err = `Active Deriv account not ${bot.account_type}`;
-          addLog(bot.id, {
-            timestamp: ts, action: "ERROR", symbol: bot.symbol,
-            direction: ai.direction, confidence: ai.confidence,
-            entryPrice: price, stake, stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-            duration: null, pnl: null, reasoning: err,
-            obZone: obInfo, fvgZone: fvgInfo, riskCheck: "Token mismatch",
-            trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-            rsi14: analysis.rsi14, atr14: analysis.atr14,
-          });
-          await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0, error: err } });
-          return;
-        }
-
-        await ws.authorize(tok.token);
-        const prop = await ws.proposal({
-          symbol: bot.symbol,
-          amount: stake,
-          contract_type: ai.direction,
-          duration: ai.duration && ai.duration > 0 ? ai.duration : 5,
-          duration_unit: (ai.duration_unit as "t" | "s" | "m" | "h") || "t",
-          basis: "stake",
-          currency: tok.currency,
-        });
-        const buy = await ws.buy(prop.proposal.id, prop.proposal.ask_price);
-        const contractId = String(buy.buy.contract_id);
-
-        addLog(bot.id, {
-          timestamp: ts, action: "ENTRY", symbol: bot.symbol,
-          direction: ai.direction, confidence: ai.confidence,
-          entryPrice: buy.buy.buy_price, stake,
-          stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-          duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : "5t",
-          pnl: null,
-          reasoning: ai.reasoning || "AI approved trade",
-          obZone: obInfo, fvgZone: fvgInfo,
-          riskCheck: `✅ Passed (stake $${stake.toFixed(2)})`,
-          trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-          rsi14: analysis.rsi14, atr14: analysis.atr14,
-        });
-
-        const tradeRow = (await fnLogOpen({
-          data: {
-            decision_id: ai.decision_id,
-            symbol: bot.symbol,
-            side: ai.direction,
-            stake,
-            contract_id: contractId,
-            buy_price: buy.buy.buy_price,
-            payout: buy.buy.payout,
-            take_profit: ai.take_profit,
-            stop_loss: ai.stop_loss,
-            account_type: bot.account_type,
-          },
-        })) as { id: string };
-
-        // Settle async via WebSocket open contract stream
-        const unsub = await ws.subscribeOpenContract(Number(contractId), async (msg) => {
-          const c = msg.proposal_open_contract;
-          if (!c) return;
-          if (c.is_sold || c.status === "sold" || c.status === "won" || c.status === "lost") {
-            unsub();
-            const pnl = Number(c.profit ?? 0);
-            const exit = Number(c.exit_tick ?? c.sell_price ?? 0);
-            const outcome = pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven";
-
-            addLog(bot.id, {
-              timestamp: Date.now(), action: "EXIT", symbol: bot.symbol,
-              direction: ai.direction, confidence: ai.confidence,
-              entryPrice: buy.buy.buy_price, stake,
-              stopLoss: ai.stop_loss, takeProfit: ai.take_profit,
-              duration: ai.duration && ai.duration_unit ? `${ai.duration}${ai.duration_unit}` : "5t",
-              pnl,
-              reasoning: `Contract ${outcome.toUpperCase()} — exit at ${exit.toFixed(4)}, P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
-              obZone: obInfo, fvgZone: fvgInfo,
-              riskCheck: `Settled: ${outcome}`,
-              trend: analysis.trend, ema20: analysis.ema20, ema50: analysis.ema50,
-              rsi14: analysis.rsi14, atr14: analysis.atr14,
-            });
-
-            await fnLogClose({ data: { trade_id: tradeRow.id, exit_price: exit, pnl, outcome } });
-            if (ai.decision_id) {
-              await fnRecordOutcome({
-                data: { decision_id: ai.decision_id, outcome, pnl, contract_id: contractId },
-              });
-            }
-            await fnTick({ data: { id: bot.id, executed: true, pnl_delta: pnl } });
-            load();
-          }
-        });
-      }
+      await fnServerTick({ data: { id: bot.id } });
+      await refreshBotState(bot.id);
+      await load();
     } catch (e: any) {
       addLog(bot.id, {
         timestamp: ts, action: "ERROR", symbol: bot.symbol,
         direction: "—", confidence: 0,
         entryPrice: null, stake: null, stopLoss: null, takeProfit: null,
         duration: null, pnl: null,
-        reasoning: e?.message || "Unknown error",
-        obZone: null, fvgZone: null, riskCheck: "Error",
+        reasoning: e?.message || "Server bot loop failed",
+        obZone: null, fvgZone: null, riskCheck: "Server loop error",
         trend: null, ema20: null, ema50: null, rsi14: null, atr14: null,
       });
-      await fnTick({ data: { id: bot.id, executed: false, pnl_delta: 0, error: e?.message } });
     }
   };
 
@@ -651,8 +364,7 @@ function BotsPage() {
         <header>
           <h1 className="text-2xl font-semibold tracking-tight">Autonomous Bots</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Each bot polls the market at its interval, calls the Qwen AI models (with lessons recalled from memory),
-            and trades when confidence ≥ threshold. The loop runs while this tab is open.
+            Each bot uses the same OB+FVG engine as backtesting, persists its activity, and can be processed by the hosted server loop after deployment.
           </p>
         </header>
 
@@ -766,8 +478,12 @@ function BotsPage() {
             const stats = getBotStats(b);
             const isExpanded = expandedBots.has(b.id);
             const logs = activityLogs.get(b.id) ?? [];
-            const currentBalance = (b.account_balance ?? 1000) + (b.total_pnl ?? 0);
+              const lockedStake = Number(b.locked_stake ?? 0);
+              const floatingPnl = Number(b.floating_pnl ?? 0);
+              const availableBalance = (b.account_balance ?? 1000) + Number(b.total_pnl ?? 0) - lockedStake;
+              const equity = availableBalance + lockedStake + floatingPnl;
             const isSimulated = b.market_mode === "simulated";
+              const positions = openPositions.get(b.id) ?? [];
 
             return (
               <div key={b.id} className="glass rounded-xl overflow-hidden">
@@ -799,14 +515,14 @@ function BotsPage() {
                       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
                         <MiniStat
                           icon={<Wallet className="size-3" />}
-                          label="Balance"
-                          value={`$${currentBalance.toFixed(2)}`}
+                          label="Available"
+                          value={`$${availableBalance.toFixed(2)}`}
                         />
                         <MiniStat
                           icon={<TrendingUp className="size-3" />}
-                          label="P&L"
-                          value={`${b.total_pnl >= 0 ? "+" : ""}${Number(b.total_pnl ?? 0).toFixed(2)}`}
-                          tone={b.total_pnl >= 0 ? "bull" : "bear"}
+                          label="Equity"
+                          value={`$${equity.toFixed(2)}`}
+                          tone={equity >= (b.account_balance ?? 1000) ? "bull" : "bear"}
                         />
                         <MiniStat
                           icon={<Target className="size-3" />}
@@ -816,14 +532,14 @@ function BotsPage() {
                         <MiniStat
                           icon={<BarChart3 className="size-3" />}
                           label="Win Rate"
-                          value={stats.trades > 0 ? `${stats.winRate.toFixed(0)}%` : "—"}
+                          value={(Number(b.wins ?? 0) + Number(b.losses ?? 0)) > 0 ? `${((Number(b.wins ?? 0) / (Number(b.wins ?? 0) + Number(b.losses ?? 0))) * 100).toFixed(0)}%` : "—"}
                           tone={stats.winRate >= 50 ? "bull" : stats.winRate > 0 ? "bear" : undefined}
                         />
                         <MiniStat
                           icon={<TrendingDown className="size-3" />}
-                          label="Max DD"
-                          value={stats.maxDD > 0 ? `${stats.maxDD.toFixed(1)}%` : "—"}
-                          tone={stats.maxDD > 10 ? "bear" : undefined}
+                          label="Open P&L"
+                          value={`${floatingPnl >= 0 ? "+" : ""}${floatingPnl.toFixed(2)}`}
+                          tone={floatingPnl >= 0 ? "bull" : "bear"}
                         />
                         <MiniStat
                           icon={<Clock className="size-3" />}
@@ -842,6 +558,27 @@ function BotsPage() {
                         <p className="text-xs text-bear flex items-center gap-1">
                           <AlertTriangle className="size-3" /> {b.last_error}
                         </p>
+                      )}
+
+                      {positions.length > 0 && (
+                        <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                          <div className="mb-2 flex items-center justify-between text-xs">
+                            <span className="font-semibold text-primary">Open simulated broker contract</span>
+                            <span className="numeric text-muted-foreground">Locked ${lockedStake.toFixed(2)}</span>
+                          </div>
+                          <div className="space-y-1">
+                            {positions.map((p) => (
+                              <div key={p.id} className="grid grid-cols-2 gap-2 text-[11px] md:grid-cols-6">
+                                <span className={p.direction === "CALL" ? "text-bull" : "text-bear"}>{p.direction}</span>
+                                <span className="numeric">Stake ${p.stake.toFixed(2)}</span>
+                                <span className="numeric">Entry {p.entry_price.toFixed(4)}</span>
+                                <span className="numeric">Now {p.current_price?.toFixed(4) ?? "—"}</span>
+                                <span className="numeric">TP {p.take_profit?.toFixed(4) ?? "—"}</span>
+                                <span className={`numeric font-semibold ${p.floating_pnl >= 0 ? "text-bull" : "text-bear"}`}>{p.floating_pnl >= 0 ? "+" : ""}{p.floating_pnl.toFixed(2)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </div>
 
@@ -930,7 +667,7 @@ function BotsPage() {
                           <Terminal className="size-3 text-primary" /> Live Activity Feed (Calibrated Setup Classification)
                         </h4>
                         <span className="text-[10px] text-muted-foreground">
-                          {logs.length} entries (session only)
+                          {logs.length} stored entries
                         </span>
                       </div>
 

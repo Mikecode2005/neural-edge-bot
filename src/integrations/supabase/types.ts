@@ -221,69 +221,274 @@ export type Database = {
         }
         Relationships: []
       }
+      bot_activity: {
+        Row: {
+          action: string
+          bot_run_id: string
+          confidence: number | null
+          created_at: string
+          direction: string | null
+          entry_price: number | null
+          fvg_zone: string | null
+          id: string
+          indicators: Json
+          ob_zone: string | null
+          pnl: number | null
+          reasoning: string
+          risk_check: string | null
+          stake: number | null
+          stop_loss: number | null
+          symbol: string
+          take_profit: number | null
+          user_id: string
+        }
+        Insert: {
+          action: string
+          bot_run_id: string
+          confidence?: number | null
+          created_at?: string
+          direction?: string | null
+          entry_price?: number | null
+          fvg_zone?: string | null
+          id?: string
+          indicators?: Json
+          ob_zone?: string | null
+          pnl?: number | null
+          reasoning: string
+          risk_check?: string | null
+          stake?: number | null
+          stop_loss?: number | null
+          symbol: string
+          take_profit?: number | null
+          user_id: string
+        }
+        Update: {
+          action?: string
+          bot_run_id?: string
+          confidence?: number | null
+          created_at?: string
+          direction?: string | null
+          entry_price?: number | null
+          fvg_zone?: string | null
+          id?: string
+          indicators?: Json
+          ob_zone?: string | null
+          pnl?: number | null
+          reasoning?: string
+          risk_check?: string | null
+          stake?: number | null
+          stop_loss?: number | null
+          symbol?: string
+          take_profit?: number | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_activity_bot_run_id_fkey"
+            columns: ["bot_run_id"]
+            isOneToOne: false
+            referencedRelation: "bot_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_positions: {
+        Row: {
+          account_type: string
+          ai_decision_id: string | null
+          bot_run_id: string
+          closed_at: string | null
+          created_at: string
+          current_price: number | null
+          direction: string
+          duration: number
+          duration_unit: string
+          entry_price: number
+          exit_price: number | null
+          expires_epoch: number | null
+          external_contract_id: string | null
+          floating_pnl: number
+          id: string
+          market_mode: string
+          opened_at: string
+          opened_epoch: number
+          outcome: string | null
+          payout: number
+          pnl: number
+          reasoning: string | null
+          stake: number
+          status: string
+          stop_loss: number | null
+          symbol: string
+          take_profit: number | null
+          trade_history_id: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          account_type: string
+          ai_decision_id?: string | null
+          bot_run_id: string
+          closed_at?: string | null
+          created_at?: string
+          current_price?: number | null
+          direction: string
+          duration?: number
+          duration_unit?: string
+          entry_price: number
+          exit_price?: number | null
+          expires_epoch?: number | null
+          external_contract_id?: string | null
+          floating_pnl?: number
+          id?: string
+          market_mode?: string
+          opened_at?: string
+          opened_epoch: number
+          outcome?: string | null
+          payout?: number
+          pnl?: number
+          reasoning?: string | null
+          stake: number
+          status?: string
+          stop_loss?: number | null
+          symbol: string
+          take_profit?: number | null
+          trade_history_id?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          account_type?: string
+          ai_decision_id?: string | null
+          bot_run_id?: string
+          closed_at?: string | null
+          created_at?: string
+          current_price?: number | null
+          direction?: string
+          duration?: number
+          duration_unit?: string
+          entry_price?: number
+          exit_price?: number | null
+          expires_epoch?: number | null
+          external_contract_id?: string | null
+          floating_pnl?: number
+          id?: string
+          market_mode?: string
+          opened_at?: string
+          opened_epoch?: number
+          outcome?: string | null
+          payout?: number
+          pnl?: number
+          reasoning?: string | null
+          stake?: number
+          status?: string
+          stop_loss?: number | null
+          symbol?: string
+          take_profit?: number | null
+          trade_history_id?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_positions_bot_run_id_fkey"
+            columns: ["bot_run_id"]
+            isOneToOne: false
+            referencedRelation: "bot_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       bot_runs: {
         Row: {
+          account_balance: number
           account_loginid: string | null
           account_type: string
+          current_price: number | null
+          floating_pnl: number
           id: string
           interval_seconds: number
           last_error: string | null
+          last_server_loop_at: string | null
           last_tick_at: string | null
+          locked_stake: number
+          losses: number
           market_mode: string
           max_stake_per_trade: number
           min_confidence: number
+          min_stake_per_trade: number
           mode: string
+          server_loop_enabled: boolean
           started_at: string
           status: string
           stopped_at: string | null
+          strategy_mode: string
           symbol: string
           timeframe: string
           total_pnl: number
           total_trades: number
           user_id: string
-          account_balance: number
+          wins: number
         }
         Insert: {
+          account_balance?: number
           account_loginid?: string | null
           account_type: string
+          current_price?: number | null
+          floating_pnl?: number
           id?: string
           interval_seconds?: number
           last_error?: string | null
+          last_server_loop_at?: string | null
           last_tick_at?: string | null
+          locked_stake?: number
+          losses?: number
           market_mode?: string
           max_stake_per_trade?: number
           min_confidence?: number
+          min_stake_per_trade?: number
           mode: string
+          server_loop_enabled?: boolean
           started_at?: string
           status?: string
           stopped_at?: string | null
+          strategy_mode?: string
           symbol: string
           timeframe?: string
           total_pnl?: number
           total_trades?: number
           user_id: string
-          account_balance?: number
+          wins?: number
         }
         Update: {
+          account_balance?: number
           account_loginid?: string | null
           account_type?: string
+          current_price?: number | null
+          floating_pnl?: number
           id?: string
           interval_seconds?: number
           last_error?: string | null
+          last_server_loop_at?: string | null
           last_tick_at?: string | null
+          locked_stake?: number
+          losses?: number
           market_mode?: string
           max_stake_per_trade?: number
           min_confidence?: number
+          min_stake_per_trade?: number
           mode?: string
+          server_loop_enabled?: boolean
           started_at?: string
           status?: string
           stopped_at?: string | null
+          strategy_mode?: string
           symbol?: string
           timeframe?: string
           total_pnl?: number
           total_trades?: number
           user_id?: string
-          account_balance?: number
+          wins?: number
         }
         Relationships: []
       }
