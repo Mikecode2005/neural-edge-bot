@@ -1,15 +1,8 @@
-import { createClient } from "@supabase/supabase-js";
-
 import type { Candle } from "@/lib/deriv-ws";
+import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { BOT_MAX_HOLD_CANDLES, BOT_PAYOUT_RATE, makeObFvgBotDecision, markOpenPosition, timeframeToGranularity } from "./bot-engine";
 
-type AdminClient = ReturnType<typeof createClient<any>>;
-
-function makeAdmin(): AdminClient {
-  return createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
-    auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
-  });
-}
+type AdminClient = typeof supabaseAdmin;
 
 function appId() {
   return process.env.DERIV_APP_ID || process.env.VITE_DERIV_APP_ID || "1089";
@@ -254,7 +247,7 @@ async function openSimulatedPosition(args: {
 }
 
 export async function processBotTick(botId: string) {
-  const supabase = makeAdmin();
+  const supabase = supabaseAdmin;
   const { data: bot, error } = await supabase.from("bot_runs").select("*").eq("id", botId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!bot || bot.status !== "running") return { ok: false, reason: "bot_not_running" };
@@ -374,7 +367,7 @@ export async function processBotTick(botId: string) {
 }
 
 export async function processDueBots(limit = 10) {
-  const supabase = makeAdmin();
+  const supabase = supabaseAdmin;
   const { data: bots, error } = await supabase
     .from("bot_runs")
     .select("id, interval_seconds, last_server_loop_at, last_tick_at")
