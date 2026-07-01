@@ -13,7 +13,7 @@
  * and ensure the FastAPI bridge is running at MT5_BRIDGE_URL (default http://localhost:8765).
  */
 
-import { MetaTrader5 } from "metatrader5-sdk";
+import MetaTrader5Default from "metatrader5-sdk";
 import type {
   Mt5Credentials,
   Mt5AccountInfo,
@@ -32,13 +32,16 @@ const MT5_BRIDGE_URL =
 const MT5_LIB_MODE: Mt5LibraryMode =
   (import.meta.env.VITE_MT5_LIB_MODE as Mt5LibraryMode) ?? "node-sdk";
 
-let sdkInstance: MetaTrader5 | null = null;
+type MetaTrader5Sdk = any;
+
+let sdkInstance: MetaTrader5Sdk | null = null;
 
 // ── Node SDK helpers ──
 
-function getSdk(): MetaTrader5 {
+function getSdk(): MetaTrader5Sdk {
   if (!sdkInstance) {
-    sdkInstance = new MetaTrader5();
+    const Ctor = ((MetaTrader5Default as any).default ?? MetaTrader5Default) as new (...args: any[]) => MetaTrader5Sdk;
+    sdkInstance = new Ctor();
   }
   return sdkInstance;
 }

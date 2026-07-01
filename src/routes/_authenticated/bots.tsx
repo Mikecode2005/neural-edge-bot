@@ -34,7 +34,17 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Toaster } from "@/components/ui/sonner";
 
-import { startBot, stopBot, listBots, tickBot, updateBotBalance, resetBotStats } from "@/lib/bots/bots.functions";
+import {
+  startBot,
+  stopBot,
+  listBots,
+  tickBot,
+  updateBotBalance,
+  resetBotStats,
+  listBotActivity,
+  listOpenBotPositions,
+  runBotServerTick,
+} from "@/lib/bots/bots.functions";
 import { getActiveDerivToken } from "@/lib/deriv/connections.functions";
 import { checkRisk, logTradeOpen, logTradeClose } from "@/lib/trading/execute.functions";
 import { recordOutcome, analyzeMarket } from "@/lib/ai/qwen.functions";
@@ -60,10 +70,28 @@ interface BotRow {
   strategy_mode?: "qwen" | "ob-fvg"; // fallback: "qwen"
   total_trades: number;
   total_pnl: number;
+  locked_stake?: number;
+  floating_pnl?: number;
+  wins?: number;
+  losses?: number;
+  current_price?: number | null;
+  last_server_loop_at?: string | null;
   last_tick_at: string | null;
   last_error: string | null;
   market_mode: string;
   account_balance?: number;
+}
+
+interface OpenBotPosition {
+  id: string;
+  direction: "CALL" | "PUT";
+  stake: number;
+  entry_price: number;
+  current_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  floating_pnl: number;
+  opened_at: string;
 }
 
 interface ActivityEntry {
@@ -115,21 +143,25 @@ function BotsPage() {
   const fnUpdateBalance = useServerFn(updateBotBalance);
   const fnResetStats = useServerFn(resetBotStats);
   const fnAnalyzeMarket = useServerFn(analyzeMarket);
+  const fnActivity = useServerFn(listBotActivity);
+  const fnOpenPositions = useServerFn(listOpenBotPositions);
+  const fnServerTick = useServerFn(runBotServerTick);
 
   const [bots, setBots] = useState<BotRow[]>([]);
   const [form, setForm] = useState({
     symbol: "R_10",
     account_type: "simulated" as "simulated" | "demo" | "real",
     interval_seconds: 60,
-    min_confidence: 0.7,
+    min_confidence: 0.65,
     max_stake_per_trade: 1,
     min_stake_per_trade: 0.35,
-    strategy_mode: "qwen" as "qwen" | "ob-fvg",
+    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg",
     account_balance: 1000,
   });
 
   // Activity logs per bot
   const [activityLogs, setActivityLogs] = useState<Map<string, ActivityEntry[]>>(new Map());
+  const [openPositions, setOpenPositions] = useState<Map<string, OpenBotPosition[]>>(new Map());
   const [expandedBots, setExpandedBots] = useState<Set<string>>(new Set());
   const [editingBalance, setEditingBalance] = useState<string | null>(null);
   const [newBalance, setNewBalance] = useState("");
@@ -151,7 +183,62 @@ function BotsPage() {
     });
   }, []);
 
-  const load = async () => setBots((await fnList()) as BotRow[]);
+  const mapDbActivity = (row: any): ActivityEntry => ({
+    id: row.id,
+    timestamp: new Date(row.created_at).getTime(),
+    action: row.action,
+    symbol: row.symbol,
+    direction: row.direction ?? "—",
+    confidence: Number(row.confidence ?? 0),
+    entryPrice: row.entry_price == null ? null : Number(row.entry_price),
+    stake: row.stake == null ? null : Number(row.stake),
+    stopLoss: row.stop_loss == null ? null : Number(row.stop_loss),
+    takeProfit: row.take_profit == null ? null : Number(row.take_profit),
+    duration: null,
+    pnl: row.pnl == null ? null : Number(row.pnl),
+    reasoning: row.reasoning,
+    obZone: row.ob_zone ?? null,
+    fvgZone: row.fvg_zone ?? null,
+    riskCheck: row.risk_check ?? null,
+    trend: row.indicators?.trend ?? null,
+    ema20: row.indicators?.ema20 == null ? null : Number(row.indicators.ema20),
+    ema50: row.indicators?.ema50 == null ? null : Number(row.indicators.ema50),
+    rsi14: row.indicators?.rsi14 == null ? null : Number(row.indicators.rsi14),
+    atr14: row.indicators?.atr14 == null ? null : Number(row.indicators.atr14),
+  });
+
+  const refreshBotState = async (botId: string) => {
+    const [rows, positions] = await Promise.all([
+      fnActivity({ data: { bot_id: botId, limit: 100 } }) as Promise<any[]>,
+      fnOpenPositions({ data: { bot_id: botId } }) as Promise<any[]>,
+    ]);
+    setActivityLogs((prev) => {
+      const next = new Map(prev);
+      next.set(botId, rows.map(mapDbActivity));
+      return next;
+    });
+    setOpenPositions((prev) => {
+      const next = new Map(prev);
+      next.set(botId, positions.map((p) => ({
+        id: p.id,
+        direction: p.direction,
+        stake: Number(p.stake ?? 0),
+        entry_price: Number(p.entry_price ?? 0),
+        current_price: p.current_price == null ? null : Number(p.current_price),
+        stop_loss: p.stop_loss == null ? null : Number(p.stop_loss),
+        take_profit: p.take_profit == null ? null : Number(p.take_profit),
+        floating_pnl: Number(p.floating_pnl ?? 0),
+        opened_at: p.opened_at,
+      })));
+      return next;
+    });
+  };
+
+  const load = async () => {
+    const rows = (await fnList()) as BotRow[];
+    setBots(rows);
+    await Promise.all(rows.slice(0, 20).map((b) => refreshBotState(b.id).catch(() => {})));
+  };
   useEffect(() => {
     load();
     return () => {
@@ -179,6 +266,23 @@ function BotsPage() {
     const ts = Date.now();
     const isSimulated = bot.market_mode === "simulated";
     const currentBalance = (bot.account_balance ?? 1000) + (bot.total_pnl ?? 0);
+
+    try {
+      await fnServerTick({ data: { id: bot.id } });
+      await refreshBotState(bot.id);
+      await load();
+    } catch (e: any) {
+      addLog(bot.id, {
+        timestamp: ts, action: "ERROR", symbol: bot.symbol,
+        direction: "—", confidence: 0,
+        entryPrice: null, stake: null, stopLoss: null, takeProfit: null,
+        duration: null, pnl: null,
+        reasoning: e?.message || "Server bot loop failed",
+        obZone: null, fvgZone: null, riskCheck: "Server loop error",
+        trend: null, ema20: null, ema50: null, rsi14: null, atr14: null,
+      });
+    }
+    return;
 
     try {
       const ws = getDerivWS();
@@ -651,8 +755,7 @@ function BotsPage() {
         <header>
           <h1 className="text-2xl font-semibold tracking-tight">Autonomous Bots</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Each bot polls the market at its interval, calls the Qwen AI models (with lessons recalled from memory),
-            and trades when confidence ≥ threshold. The loop runs while this tab is open.
+            Each bot uses the same OB+FVG engine as backtesting, persists its activity, and can be processed by the hosted server loop after deployment.
           </p>
         </header>
 
@@ -766,8 +869,12 @@ function BotsPage() {
             const stats = getBotStats(b);
             const isExpanded = expandedBots.has(b.id);
             const logs = activityLogs.get(b.id) ?? [];
-            const currentBalance = (b.account_balance ?? 1000) + (b.total_pnl ?? 0);
+              const lockedStake = Number(b.locked_stake ?? 0);
+              const floatingPnl = Number(b.floating_pnl ?? 0);
+              const availableBalance = (b.account_balance ?? 1000) + Number(b.total_pnl ?? 0) - lockedStake;
+              const equity = availableBalance + lockedStake + floatingPnl;
             const isSimulated = b.market_mode === "simulated";
+              const positions = openPositions.get(b.id) ?? [];
 
             return (
               <div key={b.id} className="glass rounded-xl overflow-hidden">
@@ -799,14 +906,14 @@ function BotsPage() {
                       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
                         <MiniStat
                           icon={<Wallet className="size-3" />}
-                          label="Balance"
-                          value={`$${currentBalance.toFixed(2)}`}
+                          label="Available"
+                          value={`$${availableBalance.toFixed(2)}`}
                         />
                         <MiniStat
                           icon={<TrendingUp className="size-3" />}
-                          label="P&L"
-                          value={`${b.total_pnl >= 0 ? "+" : ""}${Number(b.total_pnl ?? 0).toFixed(2)}`}
-                          tone={b.total_pnl >= 0 ? "bull" : "bear"}
+                          label="Equity"
+                          value={`$${equity.toFixed(2)}`}
+                          tone={equity >= (b.account_balance ?? 1000) ? "bull" : "bear"}
                         />
                         <MiniStat
                           icon={<Target className="size-3" />}
@@ -816,14 +923,14 @@ function BotsPage() {
                         <MiniStat
                           icon={<BarChart3 className="size-3" />}
                           label="Win Rate"
-                          value={stats.trades > 0 ? `${stats.winRate.toFixed(0)}%` : "—"}
+                          value={(Number(b.wins ?? 0) + Number(b.losses ?? 0)) > 0 ? `${((Number(b.wins ?? 0) / (Number(b.wins ?? 0) + Number(b.losses ?? 0))) * 100).toFixed(0)}%` : "—"}
                           tone={stats.winRate >= 50 ? "bull" : stats.winRate > 0 ? "bear" : undefined}
                         />
                         <MiniStat
                           icon={<TrendingDown className="size-3" />}
-                          label="Max DD"
-                          value={stats.maxDD > 0 ? `${stats.maxDD.toFixed(1)}%` : "—"}
-                          tone={stats.maxDD > 10 ? "bear" : undefined}
+                          label="Open P&L"
+                          value={`${floatingPnl >= 0 ? "+" : ""}${floatingPnl.toFixed(2)}`}
+                          tone={floatingPnl >= 0 ? "bull" : "bear"}
                         />
                         <MiniStat
                           icon={<Clock className="size-3" />}
@@ -842,6 +949,27 @@ function BotsPage() {
                         <p className="text-xs text-bear flex items-center gap-1">
                           <AlertTriangle className="size-3" /> {b.last_error}
                         </p>
+                      )}
+
+                      {positions.length > 0 && (
+                        <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                          <div className="mb-2 flex items-center justify-between text-xs">
+                            <span className="font-semibold text-primary">Open simulated broker contract</span>
+                            <span className="numeric text-muted-foreground">Locked ${lockedStake.toFixed(2)}</span>
+                          </div>
+                          <div className="space-y-1">
+                            {positions.map((p) => (
+                              <div key={p.id} className="grid grid-cols-2 gap-2 text-[11px] md:grid-cols-6">
+                                <span className={p.direction === "CALL" ? "text-bull" : "text-bear"}>{p.direction}</span>
+                                <span className="numeric">Stake ${p.stake.toFixed(2)}</span>
+                                <span className="numeric">Entry {p.entry_price.toFixed(4)}</span>
+                                <span className="numeric">Now {p.current_price?.toFixed(4) ?? "—"}</span>
+                                <span className="numeric">TP {p.take_profit?.toFixed(4) ?? "—"}</span>
+                                <span className={`numeric font-semibold ${p.floating_pnl >= 0 ? "text-bull" : "text-bear"}`}>{p.floating_pnl >= 0 ? "+" : ""}{p.floating_pnl.toFixed(2)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </div>
 
@@ -930,7 +1058,7 @@ function BotsPage() {
                           <Terminal className="size-3 text-primary" /> Live Activity Feed (Calibrated Setup Classification)
                         </h4>
                         <span className="text-[10px] text-muted-foreground">
-                          {logs.length} entries (session only)
+                          {logs.length} stored entries
                         </span>
                       </div>
 
