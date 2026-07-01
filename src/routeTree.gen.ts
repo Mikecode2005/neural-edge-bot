@@ -21,6 +21,7 @@ import { Route as AuthenticatedChatRouteImport } from './routes/_authenticated/c
 import { Route as AuthenticatedBotsRouteImport } from './routes/_authenticated/bots'
 import { Route as AuthenticatedBacktestRouteImport } from './routes/_authenticated/backtest'
 import { Route as AuthenticatedChatThreadIdRouteImport } from './routes/_authenticated/chat.$threadId'
+import { Route as ApiPublicHooksBotLoopRouteImport } from './routes/api/public/hooks/bot-loop'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -82,6 +83,11 @@ const AuthenticatedChatThreadIdRoute =
     path: '/$threadId',
     getParentRoute: () => AuthenticatedChatRoute,
   } as any)
+const ApiPublicHooksBotLoopRoute = ApiPublicHooksBotLoopRouteImport.update({
+  id: '/api/public/hooks/bot-loop',
+  path: '/api/public/hooks/bot-loop',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -95,6 +101,7 @@ export interface FileRoutesByFullPath {
   '/api/chat': typeof ApiChatRoute
   '/auth/deriv-callback': typeof AuthDerivCallbackRoute
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
+  '/api/public/hooks/bot-loop': typeof ApiPublicHooksBotLoopRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -108,6 +115,7 @@ export interface FileRoutesByTo {
   '/api/chat': typeof ApiChatRoute
   '/auth/deriv-callback': typeof AuthDerivCallbackRoute
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
+  '/api/public/hooks/bot-loop': typeof ApiPublicHooksBotLoopRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -123,6 +131,7 @@ export interface FileRoutesById {
   '/api/chat': typeof ApiChatRoute
   '/auth/deriv-callback': typeof AuthDerivCallbackRoute
   '/_authenticated/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
+  '/api/public/hooks/bot-loop': typeof ApiPublicHooksBotLoopRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -138,6 +147,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/auth/deriv-callback'
     | '/chat/$threadId'
+    | '/api/public/hooks/bot-loop'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -151,6 +161,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/auth/deriv-callback'
     | '/chat/$threadId'
+    | '/api/public/hooks/bot-loop'
   id:
     | '__root__'
     | '/'
@@ -165,6 +176,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/auth/deriv-callback'
     | '/_authenticated/chat/$threadId'
+    | '/api/public/hooks/bot-loop'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -172,6 +184,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
+  ApiPublicHooksBotLoopRoute: typeof ApiPublicHooksBotLoopRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -260,6 +273,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChatThreadIdRouteImport
       parentRoute: typeof AuthenticatedChatRoute
     }
+    '/api/public/hooks/bot-loop': {
+      id: '/api/public/hooks/bot-loop'
+      path: '/api/public/hooks/bot-loop'
+      fullPath: '/api/public/hooks/bot-loop'
+      preLoaderRoute: typeof ApiPublicHooksBotLoopRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -310,6 +330,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRouteWithChildren,
   ApiChatRoute: ApiChatRoute,
+  ApiPublicHooksBotLoopRoute: ApiPublicHooksBotLoopRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
