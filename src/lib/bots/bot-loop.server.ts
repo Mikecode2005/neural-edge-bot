@@ -57,6 +57,10 @@ async function fetchCandles(symbol: string, granularity: number, count = 200): P
   }));
 }
 
+async function fetchCandlesForBot(bot: any, granularity: number, count = 220): Promise<Candle[]> {
+  return fetchCandles(bot.symbol, granularity, count);
+}
+
 async function addActivity(supabase: AdminClient, row: Record<string, unknown>) {
   await supabase.from("bot_activity").insert(row as any);
 }
@@ -254,7 +258,7 @@ export async function processBotTick(botId: string) {
 
   try {
     const granularity = timeframeToGranularity(bot.timeframe);
-    const candles = await fetchCandles(bot.symbol, granularity, 220);
+    const candles = await fetchCandlesForBot(bot, granularity, 220);
     const latest = candles.at(-1);
     if (!latest || candles.length < 61) throw new Error("Not enough candles for OB+FVG bot loop");
 

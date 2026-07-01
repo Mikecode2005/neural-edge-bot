@@ -27,12 +27,19 @@ import type {
   Mt5LibraryMode,
 } from "./types";
 
+const runtimeEnv = (globalThis as Record<string, any>).process?.env;
 const MT5_BRIDGE_URL =
-  import.meta.env.VITE_MT5_BRIDGE_URL ?? "http://localhost:8765";
+  runtimeEnv?.MT5_BRIDGE_URL ??
+  runtimeEnv?.VITE_MT5_BRIDGE_URL ??
+  import.meta.env.VITE_MT5_BRIDGE_URL ??
+  "http://localhost:8765";
 const MT5_LIB_MODE: Mt5LibraryMode =
-  (import.meta.env.VITE_MT5_LIB_MODE as Mt5LibraryMode) ?? "node-sdk";
+  (runtimeEnv?.MT5_LIB_MODE as Mt5LibraryMode) ??
+  (runtimeEnv?.VITE_MT5_LIB_MODE as Mt5LibraryMode) ??
+  (import.meta.env.VITE_MT5_LIB_MODE as Mt5LibraryMode) ??
+  "node-sdk";
 
-type MetaTrader5Sdk = any;
+type MetaTrader5Sdk = Record<string, any>;
 
 let sdkInstance: MetaTrader5Sdk | null = null;
 
@@ -40,7 +47,10 @@ let sdkInstance: MetaTrader5Sdk | null = null;
 
 function getSdk(): MetaTrader5Sdk {
   if (!sdkInstance) {
-    const Ctor = ((MetaTrader5Default as any).default ?? MetaTrader5Default) as new (...args: any[]) => MetaTrader5Sdk;
+    const Ctor = ((MetaTrader5Default as any).default ?? MetaTrader5Default) as any;
+    if (typeof Ctor !== "function") {
+      throw new Error("metatrader5-sdk did not export a constructor");
+    }
     sdkInstance = new Ctor();
   }
   return sdkInstance;
@@ -96,17 +106,33 @@ export class Mt5Client {
     // Node SDK mode
     try {
       const sdk = getSdk();
-      await sdk.initialize();
+      const initFn = sdk.initialize?.bind(sdk);
+      const loginFn = sdk.login?.bind(sdk);
+      if (typeof initFn !== "function") {
+        throw new Error("metatrader5-sdk initialize() is not available in this runtime");
+      }
+      await initFn();
       if (creds) {
-        const authed = await sdk.login(
-          creds.login,
-          creds.password,
-          creds.server,
-        );
+        if (typeof loginFn !== "function") {
+          throw new Error("metatrader5-sdk login() is not available in this runtime");
+        }
+        const authed = await loginFn(creds.login, creds.password, creds.server);
         if (!authed) throw new Error("MT5 login failed");
       }
       this._connected = true;
     } catch (e) {
+      if (this.mode !== "python-bridge") {
+        try {
+          const res = await bridgeFetch<{ status: string }>('/initialize', creds);
+          if (res.status !== 'ok') throw new Error('Bridge init failed');
+          this.mode = 'python-bridge';
+          this._connected = true;
+          return;
+        } catch {
+          this._connected = false;
+          throw e;
+        }
+      }
       this._connected = false;
       throw e;
     }
