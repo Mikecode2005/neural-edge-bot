@@ -115,9 +115,162 @@ export const listOpenBotPositions = createServerFn({ method: "GET" })
     return rows ?? [];
   });
 
+export const analyzeBotDecision = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        candles: z.array(
+          z.object({
+            epoch: z.number(),
+            open: z.number(),
+            high: z.number(),
+            low: z.number(),
+            close: z.number(),
+          }),
+        ),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: bot, error } = await supabaseAdmin
+      .from("bot_runs")
+      .select("id")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!bot) throw new Error("Bot not found");
+    const { analyzeBotDecision: analyze } = await import("./bot-loop.server");
+    return analyze(data.id, data.candles as any);
+  });
+
+export const recordBotDerivTrade = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        direction: z.enum(["CALL", "PUT"]),
+        stake: z.number().positive(),
+        entry_price: z.number(),
+        contract_id: z.string(),
+        payout: z.number(),
+        reasoning: z.string(),
+        confidence: z.number(),
+        ob_zone: z.string().nullable().optional(),
+        fvg_zone: z.string().nullable().optional(),
+        trend: z.string().nullable().optional(),
+        ema20: z.number().nullable().optional(),
+        ema50: z.number().nullable().optional(),
+        rsi14: z.number().nullable().optional(),
+        atr14: z.number().nullable().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: bot } = await supabaseAdmin
+      .from("bot_runs")
+      .select("id, locked_stake, total_trades, total_pnl, wins, losses")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (!bot) throw new Error("Bot not found");
+
+    const { data: tradeRow } = await supabaseAdmin
+      .from("trade_history")
+      .insert({
+        user_id: context.userId,
+        symbol: "deriv-bot",
+        side: data.direction === "CALL" ? "BUY" : "SELL",
+        entry_price: data.entry_price,
+        size: data.stake,
+        status: "open",
+        mode: "live",
+        deriv_contract_id: data.contract_id,
+        reason_opened: data.reasoning,
+        opened_at: new Date().toISOString(),
+      } as any)
+      .select("id")
+      .single();
+
+    const { data: pos } = await supabaseAdmin
+      .from("bot_positions")
+      .insert({
+        user_id: context.userId,
+        bot_run_id: data.id,
+        symbol: "deriv-bot",
+        direction: data.direction,
+        account_type: "real",
+        market_mode: "live",
+        stake: data.stake,
+        payout: data.payout,
+        entry_price: data.entry_price,
+        status: "open",
+        trade_history_id: tradeRow?.id ?? null,
+        reasoning: data.reasoning,
+      } as any)
+      .select("id")
+      .single();
+
+    await supabaseAdmin
+      .from("bot_runs")
+      .update({
+        locked_stake: Number(bot.locked_stake ?? 0) + data.stake,
+        last_tick_at: new Date().toISOString(),
+        last_error: null,
+      } as any)
+      .eq("id", data.id);
+
+    await supabaseAdmin.from("bot_activity").insert({
+      user_id: context.userId,
+      bot_run_id: data.id,
+      action: "ENTRY",
+      symbol: "deriv-bot",
+      direction: data.direction,
+      confidence: data.confidence,
+      entry_price: data.entry_price,
+      stake: data.stake,
+      pnl: null,
+      reasoning: data.reasoning,
+      ob_zone: data.ob_zone ?? null,
+      fvg_zone: data.fvg_zone ?? null,
+      risk_check: `Live Deriv trade — contract ${data.contract_id}`,
+      indicators: {
+        trend: data.trend ?? null,
+        ema20: data.ema20 ?? null,
+        ema50: data.ema50 ?? null,
+        rsi14: data.rsi14 ?? null,
+        atr14: data.atr14 ?? null,
+      },
+    } as any);
+
+    return { ok: true, position_id: pos?.id, trade_id: tradeRow?.id };
+  });
+
 export const runBotServerTick = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        candles: z
+          .array(
+            z.object({
+              epoch: z.number(),
+              open: z.number(),
+              high: z.number(),
+              low: z.number(),
+              close: z.number(),
+            }),
+          )
+          .optional(),
+      })
+      .parse(d),
+  )
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data: bot, error } = await supabaseAdmin
@@ -129,7 +282,7 @@ export const runBotServerTick = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     if (!bot) throw new Error("Bot not found");
     const { processBotTick } = await import("./bot-loop.server");
-    return processBotTick(data.id);
+    return processBotTick(data.id, data.candles as any);
   });
 
 export const tickBot = createServerFn({ method: "POST" })
@@ -183,6 +336,31 @@ export const updateBotBalance = createServerFn({ method: "POST" })
       .eq("id", data.id)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+export const pushCandlesToStore = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        symbol: z.string(),
+        timeframe: z.string().default("1m"),
+        candles: z.array(
+          z.object({
+            epoch: z.number(),
+            open: z.number(),
+            high: z.number(),
+            low: z.number(),
+            close: z.number(),
+          }),
+        ),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const { setCandles } = await import("./candle-store");
+    setCandles(data.symbol, data.timeframe, data.candles);
     return { ok: true };
   });
 

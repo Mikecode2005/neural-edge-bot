@@ -7,83 +7,8 @@ import {
   markOpenPosition,
   timeframeToGranularity,
 } from "./bot-engine";
-import { getCandlesWithFallback } from "./candle-feed";
 
 type AdminClient = typeof supabaseAdmin;
-
-function appId() {
-  return process.env.DERIV_APP_ID || process.env.VITE_DERIV_APP_ID || "1089";
-}
-
-async function derivWsRequest<T>(payload: Record<string, unknown>, timeoutMs = 10_000): Promise<T> {
-  const WebSocketCtor = globalThis.WebSocket;
-  if (!WebSocketCtor) throw new Error("Server WebSocket is unavailable in this runtime");
-
-  return new Promise<T>((resolve, reject) => {
-    const ws = new WebSocketCtor(`wss://ws.derivws.com/websockets/v3?app_id=${appId()}`);
-    const timer = setTimeout(() => {
-      try {
-        ws.close();
-      } catch {
-        /* noop */
-      }
-      reject(new Error("Deriv request timeout"));
-    }, timeoutMs);
-
-    ws.onopen = () => ws.send(JSON.stringify(payload));
-    ws.onerror = () => {
-      clearTimeout(timer);
-      reject(new Error("Deriv WebSocket error"));
-    };
-    ws.onmessage = (event: MessageEvent) => {
-      const msg = JSON.parse(String(event.data));
-      if (msg.error) {
-        clearTimeout(timer);
-        try {
-          ws.close();
-        } catch {
-          /* noop */
-        }
-        reject(new Error(msg.error.message || "Deriv error"));
-        return;
-      }
-      clearTimeout(timer);
-      try {
-        ws.close();
-      } catch {
-        /* noop */
-      }
-      resolve(msg as T);
-    };
-  });
-}
-
-async function fetchCandles(symbol: string, granularity: number, count = 200): Promise<Candle[]> {
-  const res = await derivWsRequest<{ candles?: Array<Record<string, unknown>> }>({
-    ticks_history: symbol,
-    adjust_start_time: 1,
-    count,
-    end: "latest",
-    granularity,
-    style: "candles",
-  });
-  return (res.candles ?? []).map((c: any) => ({
-    epoch: Number(c.epoch),
-    open: Number(c.open),
-    high: Number(c.high),
-    low: Number(c.low),
-    close: Number(c.close),
-  }));
-}
-
-async function fetchCandlesForBot(bot: any, granularity: number, count = 220): Promise<Candle[]> {
-  const startPrice = Number(bot.current_price ?? bot.account_balance ?? 1000);
-  return getCandlesWithFallback(
-    () => fetchCandles(bot.symbol, granularity, count),
-    startPrice,
-    count,
-  );
-}
 
 async function addActivity(supabase: AdminClient, row: Record<string, unknown>) {
   await supabase.from("bot_activity").insert(row as any);
@@ -274,17 +199,58 @@ async function openSimulatedPosition(args: {
   return pos;
 }
 
-export async function processBotTick(botId: string) {
+export async function analyzeBotDecision(botId: string, candles: Candle[]) {
+  const supabase = supabaseAdmin;
+  const { data: bot, error } = await supabase.from("bot_runs").select("*").eq("id", botId).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!bot || bot.status !== "running") return { ok: false, reason: "bot_not_running" };
+
+  if (!candles || candles.length < 61) {
+    throw new Error("No real candle data available. Open the dashboard first to stream market data.");
+  }
+
+  const latest = candles.at(-1);
+  if (!latest) throw new Error("No candle data available");
+
+  const availableBalance = Number(bot.account_balance ?? 1000) + Number(bot.total_pnl ?? 0) - Number(bot.locked_stake ?? 0);
+  const decision = makeObFvgBotDecision(candles, {
+    minConfidence: Number(bot.min_confidence ?? 0.65),
+    availableBalance,
+    minStake: Number(bot.min_stake_per_trade ?? 0.35),
+    maxStake: Number(bot.max_stake_per_trade ?? 1),
+  });
+
+  return {
+    ok: true,
+    decision,
+    latestClose: latest.close,
+    latestEpoch: latest.epoch,
+    symbol: bot.symbol,
+    timeframe: bot.timeframe,
+    accountBalance: Number(bot.account_balance ?? 1000),
+    totalPnl: Number(bot.total_pnl ?? 0),
+  };
+}
+
+export async function processBotTick(botId: string, candles?: Candle[]) {
   const supabase = supabaseAdmin;
   const { data: bot, error } = await supabase.from("bot_runs").select("*").eq("id", botId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!bot || bot.status !== "running") return { ok: false, reason: "bot_not_running" };
 
   try {
-    const granularity = timeframeToGranularity(bot.timeframe);
-    const candles = await fetchCandlesForBot(bot, granularity, 220);
+    // If candles were not passed from the browser, try to read from the in-memory store
+    if (!candles || candles.length < 61) {
+      const { getCandles } = await import("./candle-store");
+      candles = getCandles(bot.symbol, bot.timeframe ?? "1m", 61);
+    }
+
+    if (!candles || candles.length < 61) {
+      throw new Error("No real candle data available. Open the dashboard first to stream market data.");
+    }
+
     const latest = candles.at(-1);
-    if (!latest || candles.length < 61) throw new Error("Not enough candles for OB+FVG bot loop");
+    if (!latest) throw new Error("No candle data available");
 
     const { data: openPositions } = await supabase
       .from("bot_positions")

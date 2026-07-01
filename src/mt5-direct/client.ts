@@ -37,7 +37,7 @@ const MT5_LIB_MODE: Mt5LibraryMode =
   (runtimeEnv?.MT5_LIB_MODE as Mt5LibraryMode) ??
   (runtimeEnv?.VITE_MT5_LIB_MODE as Mt5LibraryMode) ??
   (import.meta.env.VITE_MT5_LIB_MODE as Mt5LibraryMode) ??
-  "node-sdk";
+  "python-bridge";
 
 type MetaTrader5Sdk = Record<string, any>;
 

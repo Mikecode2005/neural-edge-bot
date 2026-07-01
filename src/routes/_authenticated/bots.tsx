@@ -43,8 +43,12 @@ import {
   listBotActivity,
   listOpenBotPositions,
   runBotServerTick,
+  analyzeBotDecision,
+  recordBotDerivTrade,
+  pushCandlesToStore,
 } from "@/lib/bots/bots.functions";
 import { DERIV_SYMBOLS } from "@/lib/deriv-ws";
+import { getDerivWS, type DerivCandle } from "@/lib/deriv/ws";
 
 export const Route = createFileRoute("/_authenticated/bots")({
   head: () => ({ meta: [{ title: "Bots — Autonomous AI Loop" }] }),
@@ -121,6 +125,8 @@ function BotsPage() {
   const fnActivity = useServerFn(listBotActivity);
   const fnOpenPositions = useServerFn(listOpenBotPositions);
   const fnServerTick = useServerFn(runBotServerTick);
+  const fnAnalyzeDecision = useServerFn(analyzeBotDecision);
+  const fnRecordDerivTrade = useServerFn(recordBotDerivTrade);
 
   const [bots, setBots] = useState<BotRow[]>([]);
   const [form, setForm] = useState({
@@ -237,7 +243,104 @@ function BotsPage() {
   const runOneTick = async (bot: BotRow) => {
     const ts = Date.now();
     try {
-      await fnServerTick({ data: { id: bot.id } });
+      const ws = getDerivWS();
+      if (!ws) throw new Error("Live market data is unavailable");
+      const candles = await ws.fetchCandles(bot.symbol, 60, 220);
+
+      const isDerivLive = bot.market_mode !== "simulated";
+
+      if (isDerivLive) {
+        // For Deriv demo/real: get OB+FVG decision from server, then execute via Deriv WS in browser
+        const analysis = await fnAnalyzeDecision({ data: { id: bot.id, candles } }) as any;
+        if (!analysis.ok || !analysis.decision) throw new Error("Analysis failed");
+
+        const decision = analysis.decision;
+        if (!decision.shouldTrade) {
+          // Log scan and update bot state
+          await fnServerTick({ data: { id: bot.id, candles } });
+          await refreshBotState(bot.id);
+          await load();
+          return;
+        }
+
+        // Execute real Deriv trade from browser
+        const stake = Math.max(0.35, Math.min(decision.stake, 100));
+        const duration = 5;
+        const duration_unit = "t";
+
+        const prop = await ws.proposal({
+          symbol: bot.symbol,
+          amount: stake,
+          contract_type: decision.direction,
+          duration,
+          duration_unit,
+          basis: "stake",
+          currency: "USD",
+        });
+        if (!prop.proposal?.id) throw new Error("No proposal id");
+
+        const buy = await ws.buy(prop.proposal.id, prop.proposal.ask_price);
+        if (!buy.buy?.contract_id) throw new Error("Buy failed");
+
+        const contractId = String(buy.buy.contract_id);
+
+        // Record the trade on the server
+        await fnRecordDerivTrade({
+          data: {
+            id: bot.id,
+            direction: decision.direction,
+            stake,
+            entry_price: decision.entryPrice,
+            contract_id: contractId,
+            payout: buy.buy.payout ?? 0,
+            reasoning: decision.reasoning,
+            confidence: decision.confidence,
+            ob_zone: decision.obZone,
+            fvg_zone: decision.fvgZone,
+            trend: decision.analysis.trend,
+            ema20: decision.analysis.ema20,
+            ema50: decision.analysis.ema50,
+            rsi14: decision.analysis.rsi14,
+            atr14: decision.analysis.atr14,
+          },
+        });
+
+        addLog(bot.id, {
+          timestamp: ts, action: "ENTRY", symbol: bot.symbol,
+          direction: decision.direction, confidence: decision.confidence,
+          entryPrice: decision.entryPrice, stake, stopLoss: decision.stopLoss, takeProfit: decision.takeProfit,
+          duration: `${duration}${duration_unit}`, pnl: null,
+          reasoning: `LIVE DERIV ${bot.account_type.toUpperCase()} — ${decision.reasoning}`,
+          obZone: decision.obZone, fvgZone: decision.fvgZone, riskCheck: `Contract ${contractId}`,
+          trend: decision.analysis.trend, ema20: decision.analysis.ema20,
+          ema50: decision.analysis.ema50, rsi14: decision.analysis.rsi14, atr14: decision.analysis.atr14,
+        });
+
+        // Subscribe to contract result
+        ws.subscribeOpenContract(Number(contractId), async (msg) => {
+          const c = msg.proposal_open_contract;
+          if (!c) return;
+          if (c.is_sold || c.status === "sold" || c.status === "won" || c.status === "lost") {
+            const pnl = Number(c.profit ?? 0);
+            const outcome: "win" | "loss" | "breakeven" = pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven";
+            addLog(bot.id, {
+              timestamp: Date.now(), action: "EXIT", symbol: bot.symbol,
+              direction: decision.direction, confidence: decision.confidence,
+              entryPrice: decision.entryPrice, stake, stopLoss: null, takeProfit: null,
+              duration: null, pnl,
+              reasoning: `LIVE DERIV ${outcome.toUpperCase()} — P&L ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
+              obZone: null, fvgZone: null, riskCheck: `Contract ${contractId} settled`,
+              trend: null, ema20: null, ema50: null, rsi14: null, atr14: null,
+            });
+            await refreshBotState(bot.id);
+            await load();
+          }
+        });
+      } else {
+        // Simulated mode: use server-side paper trading
+        await fnServerTick({ data: { id: bot.id, candles } });
+      }
+
       await refreshBotState(bot.id);
       await load();
     } catch (e: any) {

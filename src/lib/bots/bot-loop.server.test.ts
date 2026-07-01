@@ -1,25 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { buildFallbackCandles, getCandlesWithFallback } from "./candle-feed";
+import { requireLiveCandles } from "./candle-feed";
 
-describe("buildFallbackCandles", () => {
-  it("creates a candle series from a starting price", () => {
-    const candles = buildFallbackCandles(100, 5);
+describe("requireLiveCandles", () => {
+  it("returns the provided live candles", () => {
+    const candles = Array.from({ length: 61 }, (_, index) => ({
+      epoch: index,
+      open: 100 + index,
+      high: 101 + index,
+      low: 99 + index,
+      close: 100.5 + index,
+    }));
 
-    expect(candles).toHaveLength(5);
-    expect(candles[0].open).toBeCloseTo(100, 5);
-    expect(candles[0].close).toBeGreaterThan(0);
-    expect(candles[4].close).toBeGreaterThan(0);
+    expect(requireLiveCandles(candles, 61)).toHaveLength(61);
+    expect(requireLiveCandles(candles, 61)[0].open).toBe(100);
   });
-});
 
-describe("getCandlesWithFallback", () => {
-  it("returns synthetic candles when the live feed fails", async () => {
-    const candles = await getCandlesWithFallback(async () => {
-      throw new Error("Deriv WebSocket error");
-    }, 123.45, 5);
-
-    expect(candles).toHaveLength(5);
-    expect(candles[0].open).toBeCloseTo(123.45, 5);
-    expect(candles[0].close).toBeGreaterThan(0);
+  it("throws when the live feed does not provide enough candles", () => {
+    expect(() => requireLiveCandles([{ epoch: 1, open: 100, high: 101, low: 99, close: 100 }], 61)).toThrow(
+      "Live candle feed unavailable",
+    );
   });
 });
