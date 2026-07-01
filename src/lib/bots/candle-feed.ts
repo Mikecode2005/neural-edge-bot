@@ -24,3 +24,18 @@ export function buildFallbackCandles(startPrice: number, count = 220): Candle[] 
 
   return candles;
 }
+
+export async function getCandlesWithFallback(
+  liveFetcher: () => Promise<Candle[]>,
+  startPrice: number,
+  count = 220,
+): Promise<Candle[]> {
+  try {
+    const candles = await liveFetcher();
+    if (Array.isArray(candles) && candles.length >= 2) return candles;
+  } catch {
+    // fall back to synthetic candles for paper-trading when the live feed is unavailable
+  }
+
+  return buildFallbackCandles(startPrice, count);
+}

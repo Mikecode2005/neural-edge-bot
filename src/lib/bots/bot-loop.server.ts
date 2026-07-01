@@ -1,6 +1,13 @@
 import type { Candle } from "@/lib/deriv-ws";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
-import { BOT_MAX_HOLD_CANDLES, BOT_PAYOUT_RATE, makeObFvgBotDecision, markOpenPosition, timeframeToGranularity } from "./bot-engine";
+import {
+  BOT_MAX_HOLD_CANDLES,
+  BOT_PAYOUT_RATE,
+  makeObFvgBotDecision,
+  markOpenPosition,
+  timeframeToGranularity,
+} from "./bot-engine";
+import { getCandlesWithFallback } from "./candle-feed";
 
 type AdminClient = typeof supabaseAdmin;
 
@@ -9,13 +16,17 @@ function appId() {
 }
 
 async function derivWsRequest<T>(payload: Record<string, unknown>, timeoutMs = 10_000): Promise<T> {
-  const WebSocketCtor = (globalThis as any).WebSocket;
+  const WebSocketCtor = globalThis.WebSocket;
   if (!WebSocketCtor) throw new Error("Server WebSocket is unavailable in this runtime");
 
   return new Promise<T>((resolve, reject) => {
     const ws = new WebSocketCtor(`wss://ws.derivws.com/websockets/v3?app_id=${appId()}`);
     const timer = setTimeout(() => {
-      try { ws.close(); } catch {}
+      try {
+        ws.close();
+      } catch {
+        /* noop */
+      }
       reject(new Error("Deriv request timeout"));
     }, timeoutMs);
 
@@ -28,19 +39,27 @@ async function derivWsRequest<T>(payload: Record<string, unknown>, timeoutMs = 1
       const msg = JSON.parse(String(event.data));
       if (msg.error) {
         clearTimeout(timer);
-        try { ws.close(); } catch {}
+        try {
+          ws.close();
+        } catch {
+          /* noop */
+        }
         reject(new Error(msg.error.message || "Deriv error"));
         return;
       }
       clearTimeout(timer);
-      try { ws.close(); } catch {}
+      try {
+        ws.close();
+      } catch {
+        /* noop */
+      }
       resolve(msg as T);
     };
   });
 }
 
 async function fetchCandles(symbol: string, granularity: number, count = 200): Promise<Candle[]> {
-  const res = await derivWsRequest<any>({
+  const res = await derivWsRequest<{ candles?: Array<Record<string, unknown>> }>({
     ticks_history: symbol,
     adjust_start_time: 1,
     count,
@@ -58,7 +77,12 @@ async function fetchCandles(symbol: string, granularity: number, count = 200): P
 }
 
 async function fetchCandlesForBot(bot: any, granularity: number, count = 220): Promise<Candle[]> {
-  return fetchCandles(bot.symbol, granularity, count);
+  const startPrice = Number(bot.current_price ?? bot.account_balance ?? 1000);
+  return getCandlesWithFallback(
+    () => fetchCandles(bot.symbol, granularity, count),
+    startPrice,
+    count,
+  );
 }
 
 async function addActivity(supabase: AdminClient, row: Record<string, unknown>) {
