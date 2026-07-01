@@ -6,7 +6,9 @@ import {
   makeObFvgBotDecision,
   markOpenPosition,
   timeframeToGranularity,
+  calculateBotStake,
 } from "./bot-engine";
+import type { BotDecision, BotDirection } from "./bot-engine";
 
 type AdminClient = typeof supabaseAdmin;
 
@@ -213,6 +215,69 @@ export async function analyzeBotDecision(botId: string, candles: Candle[]) {
   if (!latest) throw new Error("No candle data available");
 
   const availableBalance = Number(bot.account_balance ?? 1000) + Number(bot.total_pnl ?? 0) - Number(bot.locked_stake ?? 0);
+
+  // If strategy_mode is "qwen", call Qwen AI for the decision
+  if (bot.strategy_mode === "qwen") {
+    try {
+      const { analyze } = await import("@/lib/ob-fvg");
+      const analysis = analyze(candles);
+      const { analyzeMarket } = await import("@/lib/ai/qwen.functions");
+      const qwenResult = await analyzeMarket({
+        data: {
+          symbol: bot.symbol,
+          timeframe: bot.timeframe ?? "1m",
+          candles: candles.slice(-60),
+          ob_zones: analysis.activeOB ? [{ type: analysis.activeOB.kind, top: analysis.activeOB.top, bottom: analysis.activeOB.bottom }] : [],
+          fvg_zones: analysis.activeFVG ? [{ type: analysis.activeFVG.kind, top: analysis.activeFVG.top, bottom: analysis.activeFVG.bottom }] : [],
+          current_price: latest.close,
+          balance: availableBalance,
+        },
+      });
+
+      const qwen = qwenResult as any;
+      const direction = qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
+      const confidence = Number(qwen.confidence ?? 0);
+      const stake = calculateBotStake({
+        availableBalance,
+        minStake: Number(bot.min_stake_per_trade ?? 0.35),
+        maxStake: Number(bot.max_stake_per_trade ?? 1),
+      });
+      const confidenceOk = confidence >= Number(bot.min_confidence ?? 0.65);
+      const shouldTrade = direction !== "NONE" && confidenceOk && stake > 0;
+
+      const decision: BotDecision = {
+        shouldTrade,
+        direction: direction as BotDirection | "NONE",
+        confidence,
+        entryPrice: latest.close,
+        stake,
+        stopLoss: qwen.stop_loss ?? null,
+        takeProfit: qwen.take_profit ?? null,
+        duration: Number(qwen.duration ?? BOT_MAX_HOLD_CANDLES),
+        durationUnit: "m",
+        analysis: analysis as any,
+        reasoning: `Qwen AI: ${qwen.reasoning ?? "No reasoning provided"}`,
+        obZone: analysis.activeOB ? `${analysis.activeOB.kind} OB [${analysis.activeOB.bottom.toFixed(4)}, ${analysis.activeOB.top.toFixed(4)}]` : null,
+        fvgZone: analysis.activeFVG ? `${analysis.activeFVG.kind} FVG [${analysis.activeFVG.bottom.toFixed(4)}, ${analysis.activeFVG.top.toFixed(4)}]` : null,
+      };
+
+      return {
+        ok: true,
+        decision,
+        latestClose: latest.close,
+        latestEpoch: latest.epoch,
+        symbol: bot.symbol,
+        timeframe: bot.timeframe,
+        accountBalance: Number(bot.account_balance ?? 1000),
+        totalPnl: Number(bot.total_pnl ?? 0),
+      };
+    } catch (e: any) {
+      // Fallback to OB+FVG if Qwen fails
+      console.error("Qwen AI failed, falling back to OB+FVG:", e?.message);
+    }
+  }
+
+  // Default: OB+FVG strategy
   const decision = makeObFvgBotDecision(candles, {
     minConfidence: Number(bot.min_confidence ?? 0.65),
     availableBalance,

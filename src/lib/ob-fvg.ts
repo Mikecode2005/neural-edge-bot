@@ -386,10 +386,12 @@ export function analyze(candles: Candle[]): LiveAnalysis {
     : lastPrice >= activeFVG.bottom;
 
   // Decide if we should BUY/SELL or WAIT
+  // Decision is based on having an active OB+FVG setup — confidence gates the trade
   let decision: "BUY" | "SELL" | "WAIT" = "WAIT";
   let confidence = 0.25;
 
-  if (activeOB && activeFVG && emaAlignment && rsiCheck && volatilityFilter && retracedIntoFVG) {
+  if (activeOB && activeFVG) {
+    // We have an active OB+FVG setup — set direction from the OB kind
     decision = isBull ? "BUY" : "SELL";
   }
 

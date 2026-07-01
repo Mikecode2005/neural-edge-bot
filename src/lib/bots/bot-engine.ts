@@ -85,11 +85,24 @@ export function makeObFvgBotDecision(
   const window = candles.slice(-61);
   const analysis = analyze(window);
   const last = window.at(-1);
-  const entryPrice = last?.close ?? 0;
   const obZone = formatObZone(analysis);
   const fvgZone = formatFvgZone(analysis);
-  const direction: BotDirection | "NONE" =
-    analysis.decision === "BUY" ? "CALL" : analysis.decision === "SELL" ? "PUT" : "NONE";
+
+  // Use OB midpoint as entry when available, otherwise use close price
+  const entryPrice = analysis.entry ?? last?.close ?? 0;
+
+  // Determine direction from analysis - use confidence to decide even if strict filters fail
+  let direction: BotDirection | "NONE" = "NONE";
+  if (analysis.activeOB && analysis.activeFVG) {
+    // If we have an active OB+FVG setup, determine direction from the OB kind
+    direction = analysis.activeOB.kind === "bullish" ? "CALL" : "PUT";
+  } else if (analysis.decision === "BUY") {
+    direction = "CALL";
+  } else if (analysis.decision === "SELL") {
+    direction = "PUT";
+  }
+
+  // Use analysis SL/TP when available, otherwise calculate from entry
   const stopLoss =
     analysis.sl ??
     (direction === "CALL"
@@ -104,13 +117,17 @@ export function makeObFvgBotDecision(
       : direction === "PUT"
         ? entryPrice - 1.5 * analysis.atr14
         : null);
+
   const stake = calculateBotStake({
     availableBalance: opts.availableBalance,
     minStake: opts.minStake,
     maxStake: opts.maxStake,
   });
+
+  // Trade when confidence meets threshold AND we have a direction
   const confidenceOk = analysis.confidence >= opts.minConfidence;
   const shouldTrade = direction !== "NONE" && confidenceOk && stake > 0;
+
   const below = confidenceOk
     ? ""
     : ` | Confidence ${(analysis.confidence * 100).toFixed(0)}% below threshold ${(opts.minConfidence * 100).toFixed(0)}%`;
