@@ -38,18 +38,12 @@ import {
   startBot,
   stopBot,
   listBots,
-  tickBot,
   updateBotBalance,
   resetBotStats,
   listBotActivity,
   listOpenBotPositions,
   runBotServerTick,
 } from "@/lib/bots/bots.functions";
-import { getActiveDerivToken } from "@/lib/deriv/connections.functions";
-import { checkRisk, logTradeOpen, logTradeClose } from "@/lib/trading/execute.functions";
-import { recordOutcome, analyzeMarket } from "@/lib/ai/qwen.functions";
-import { getDerivWS } from "@/lib/deriv/ws";
-import { analyze } from "@/lib/ob-fvg";
 import { DERIV_SYMBOLS } from "@/lib/deriv-ws";
 
 export const Route = createFileRoute("/_authenticated/bots")({
@@ -118,31 +112,12 @@ interface ActivityEntry {
   atr14: number | null;
 }
 
-// Track active simulated trades in memory: mapped by botId -> trade details
-interface SimulatedTrade {
-  tradeId: string;
-  direction: "CALL" | "PUT";
-  entryPrice: number;
-  takeProfit: number;
-  stopLoss: number;
-  stake: number;
-  candlesHeld: number;
-  openedAt: number;
-}
-
 function BotsPage() {
   const fnStart = useServerFn(startBot);
   const fnStop = useServerFn(stopBot);
   const fnList = useServerFn(listBots);
-  const fnTick = useServerFn(tickBot);
-  const fnGetToken = useServerFn(getActiveDerivToken);
-  const fnCheckRisk = useServerFn(checkRisk);
-  const fnLogOpen = useServerFn(logTradeOpen);
-  const fnLogClose = useServerFn(logTradeClose);
-  const fnRecordOutcome = useServerFn(recordOutcome);
   const fnUpdateBalance = useServerFn(updateBotBalance);
   const fnResetStats = useServerFn(resetBotStats);
-  const fnAnalyzeMarket = useServerFn(analyzeMarket);
   const fnActivity = useServerFn(listBotActivity);
   const fnOpenPositions = useServerFn(listOpenBotPositions);
   const fnServerTick = useServerFn(runBotServerTick);
@@ -166,9 +141,6 @@ function BotsPage() {
   const [editingBalance, setEditingBalance] = useState<string | null>(null);
   const [newBalance, setNewBalance] = useState("");
   const [showMt5Guide, setShowMt5Guide] = useState(false);
-
-  // Simulated trades in-memory tracker
-  const [simulatedTrades, setSimulatedTrades] = useState<Map<string, SimulatedTrade>>(new Map());
 
   const loopsRef = useRef<Map<string, number>>(new Map());
   const logIdRef = useRef(0);
