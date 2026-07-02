@@ -41,13 +41,6 @@ import {
   mt5ClosePosition,
   mt5GetRates,
   mt5Status,
-  botStart,
-  botStop,
-  botList,
-  botActivity,
-  botOpenPositions,
-  tunnelRegister,
-  tunnelInfo,
 } from "@/mt5-direct/api";
 import type { Mt5AccountInfo, Mt5Position, Mt5OrderResult } from "@/mt5-direct/types";
 
@@ -92,11 +85,6 @@ function Mt5DirectPage() {
     setConnecting(false);
   }, [fnConnect]);
 
-      const fnBotStart = useServerFn(botStart);
-      const fnBotStop = useServerFn(botStop);
-      const fnBotList = useServerFn(botList);
-      const fnBotActivity = useServerFn(botActivity);
-      const fnBotOpenPositions = useServerFn(botOpenPositions);
   const disconnect = useCallback(async () => {
     await fnDisconnect();
     setConnected(false);
@@ -109,11 +97,7 @@ function Mt5DirectPage() {
     const info = await fnAccount();
     if ("error" in info) {
       toast.error(info.error);
-      const [placing, setPlacing] = useState(false);
-      const [bots, setBots] = useState<any[]>([]);
-      const [botForm, setBotForm] = useState({ symbol: "EURUSD", interval_seconds: 60, enable_trading: false });
-      const [selectedActivity, setSelectedActivity] = useState<any[]>([]);
-      const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
+    } else {
       setAccount(info as Mt5AccountInfo);
     }
   }, [fnAccount]);
@@ -161,11 +145,6 @@ function Mt5DirectPage() {
     if ("error" in result) {
       toast.error("Close failed", { description: result.error });
     } else {
-        // load bots
-        (async () => {
-          const rows = await botList();
-          setBots(rows ?? []);
-        })();
       toast.success(`Position #${ticket} closed`);
       refreshPositions();
     }
@@ -178,36 +157,6 @@ function Mt5DirectPage() {
       <div className="max-w-7xl mx-auto px-6 py-6 space-y-6">
         <header className="flex items-center justify-between">
           <div>
-      const handleStartBot = async () => {
-        const res = await fnBotStart({ data: botForm });
-        if (res?.ok) {
-          toast.success("Bot started");
-          const rows = await fnBotList();
-          setBots(rows ?? []);
-        } else {
-          toast.error("Failed to start bot");
-        }
-      };
-
-      const handleStopBot = async (id: string) => {
-        await fnBotStop({ data: { id } });
-        toast.message("Bot stopped");
-        const rows = await fnBotList();
-        setBots(rows ?? []);
-      };
-
-      const handleViewActivity = async (id: string) => {
-        const rows = await fnBotActivity({ data: { id } });
-        setSelectedActivity(rows ?? []);
-        setSelectedBotId(id);
-      };
-
-      const handleShowBotPositions = async (id: string) => {
-        const rows = await fnBotOpenPositions({ data: { id } });
-        setPositions(rows ?? []);
-        setSelectedBotId(id);
-        toast.message("Loaded bot positions");
-      };
             <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
               <ExternalLink className="size-5 text-primary" /> MT5 Direct
             </h1>
