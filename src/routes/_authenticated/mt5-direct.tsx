@@ -104,11 +104,7 @@ function Mt5DirectPage() {
     const info = await fnAccount();
     if ("error" in info) {
       toast.error(info.error);
-      const [placing, setPlacing] = useState(false);
-      const [bots, setBots] = useState<any[]>([]);
-      const [botForm, setBotForm] = useState({ symbol: "EURUSD", interval_seconds: 60, enable_trading: false });
-      const [selectedActivity, setSelectedActivity] = useState<any[]>([]);
-      const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
+    } else {
       setAccount(info as Mt5AccountInfo);
     }
   }, [fnAccount]);
