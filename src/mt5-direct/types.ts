@@ -100,3 +100,20 @@ export interface Mt5ConnectionStatus {
 }
 
 export type Mt5LibraryMode = "node-sdk" | "python-bridge";
+
+// Bot types (lightweight, match bridge in-memory bot schema)
+export interface Mt5Bot {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  interval_seconds: number;
+  enable_trading: boolean;
+  status: "running" | "stopped";
+  last_loop_at?: string | null;
+}
+
+export interface Mt5BotActivityEntry {
+  timestamp: number;
+  action: string;
+  details?: any;
+}

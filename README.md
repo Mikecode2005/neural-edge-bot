@@ -17,33 +17,37 @@ npm run dev
 
 ## MT5 Direct Integration
 
-The MT5 Direct module (`src/mt5-direct/`) provides a trading interface for MetaTrader 5 via the `metatrader5-sdk` Node.js package.
+The MT5 Direct module (`src/mt5-direct/`) provides a trading interface for MetaTrader 5 via a Python FastAPI bridge service.
 
 ### Setup
 
-1. **Install the SDK** (already done):
+1. **Install the Python bridge dependencies**:
    ```bash
-   npm install metatrader5-sdk
+   pip install MetaTrader5 fastapi uvicorn python-dotenv
    ```
 
 2. **Configure credentials** in `.env`:
-   ```
+   ```env
    MT5_ACCOUNT_LOGIN=12345678
    MT5_ACCOUNT_PASSWORD=your_mt5_password
    MT5_ACCOUNT_SERVER=Deriv-Server
-   MT5_LIB_MODE=node-sdk
+   MT5_LIB_MODE=python-bridge
+   VITE_MT5_BRIDGE_URL=http://localhost:8765
    ```
 
-3. **Start the app** and navigate to **MT5 Direct** tab to connect and trade.
+3. **Start the bridge**:
+   ```bash
+   python -m routes.mt5_bridge.server
+   ```
+
+4. **Start the app** and navigate to **MT5 Direct** tab to connect and trade.
 
 ### Library Choice
 
-- **Primary:** `metatrader5-sdk` (npm) — Wraps the MetaTrader 5 Web API in a clean Node.js interface without requiring the MT5 desktop terminal.
-- **Fallback:** Python FastAPI bridge — Uses the native `MetaTrader5` Python package which requires the MT5 terminal installed on Windows. Set `MT5_LIB_MODE=python-bridge` and run:
-  ```bash
-  pip install MetaTrader5 fastapi uvicorn
-  python -m hf_backend.app.mt5_bridge  # or your bridge entrypoint
-  ```
+- **Primary:** Python FastAPI bridge — Uses the native `MetaTrader5` Python package and the MT5 desktop terminal on Windows.
+- **Fallback:** The repository no longer relies on the npm `metatrader5-sdk` package for production trading.
+
+For Render deployment, host the bridge service and set `VITE_MT5_BRIDGE_URL` to the Render endpoint.
 
 ### Architecture
 

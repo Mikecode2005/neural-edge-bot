@@ -855,12 +855,12 @@ function BotsPage() {
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold flex items-center gap-2">
                   <span className="size-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold flex items-center justify-center">2</span>
-                  Connect via Node.js SDK <Badge variant="default" className="text-[10px]">Primary</Badge>
+                  Connect via Python FastAPI bridge <Badge variant="default" className="text-[10px]">Primary</Badge>
                 </h3>
                 <div className="ml-7 text-xs text-muted-foreground space-y-1.5 leading-relaxed">
-                  <p>The <code className="bg-card px-1 rounded">metatrader5-sdk</code> npm package connects to the MT5 Web API
-                  without needing the MT5 terminal installed. Just configure credentials in .env and click
-                  <strong> "Connect"</strong> on the MT5 Direct page.</p>
+                  <p>The MT5 connection is now handled by a Python FastAPI bridge service.
+                  Configure credentials in <code className="bg-card px-1 rounded">.env</code> and deploy the bridge,
+                  then point <code className="bg-card px-1 rounded">VITE_MT5_BRIDGE_URL</code> to the service.</p>
                 </div>
               </div>
 

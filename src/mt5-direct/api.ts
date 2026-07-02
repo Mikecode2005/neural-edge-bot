@@ -31,7 +31,7 @@ function getCreds(): Mt5Credentials | null {
 }
 
 function client() {
-  const mode = (process.env.MT5_LIB_MODE as Mt5LibraryMode) ?? "node-sdk";
+  const mode = (process.env.MT5_LIB_MODE as Mt5LibraryMode) ?? "python-bridge";
   return getMt5Client(mode);
 }
 
@@ -156,3 +156,80 @@ export const mt5GetSymbolInfo = createServerFn({ method: "POST" })
       }
     },
   );
+
+// Helper to call the Python bridge directly from server-side functions
+function bridgeFetch<T>(endpoint: string, body?: unknown): Promise<T> {
+  const url = (process.env.MT5_BRIDGE_URL as string | undefined) ?? (import.meta.env as Record<string, string>).VITE_MT5_BRIDGE_URL ?? "http://localhost:8765";
+  return fetch(`${url}${endpoint}`, {
+    method: body ? "POST" : "GET",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(async (r) => {
+    if (!r.ok) throw new Error(`Bridge error ${r.status} - ${await r.text()}`);
+    return r.json();
+  });
+}
+
+export const botStart = createServerFn({ method: "POST" }).handler(
+  async ({ data }: any): Promise<{ ok: boolean; bot?: any; error?: string }> => {
+    try {
+      const res = await bridgeFetch<any>('/bot/start', data);
+      return res;
+    } catch (e: any) {
+      return { ok: false, error: e?.message };
+    }
+  },
+);
+
+export const botStop = createServerFn({ method: "POST" }).handler(
+  async ({ data }: any): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const res = await bridgeFetch<any>('/bot/stop', data);
+      return res;
+    } catch (e: any) {
+      return { ok: false, error: e?.message };
+    }
+  },
+);
+
+export const botList = createServerFn({ method: "GET" }).handler(async (): Promise<any[]> => {
+  try {
+    return await bridgeFetch<any[]>('/bot/list');
+  } catch (e: any) {
+    return [];
+  }
+});
+
+export const botActivity = createServerFn({ method: "GET" }).handler(async ({ data }: any): Promise<any[]> => {
+  try {
+    const id = data?.id;
+    return await bridgeFetch<any[]>(`/bot/activity?bot_id=${encodeURIComponent(id)}`);
+  } catch (e: any) {
+    return [];
+  }
+});
+
+export const botOpenPositions = createServerFn({ method: "GET" }).handler(async ({ data }: any): Promise<any[]> => {
+  try {
+    const id = data?.id;
+    return await bridgeFetch<any[]>(`/bot/open-positions?bot_id=${encodeURIComponent(id)}`);
+  } catch (e: any) {
+    return [];
+  }
+});
+
+export const tunnelRegister = createServerFn({ method: "POST" }).handler(async ({ data }: any): Promise<any> => {
+  try {
+    return await bridgeFetch('/tunnel/register', data);
+  } catch (e: any) {
+    return { ok: false, error: e?.message };
+  }
+});
+
+export const tunnelInfo = createServerFn({ method: "GET" }).handler(async (): Promise<any> => {
+  try {
+    return await bridgeFetch('/tunnel/info');
+  } catch (e: any) {
+    return { url: null };
+  }
+});
