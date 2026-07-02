@@ -404,6 +404,7 @@ export type Database = {
           account_balance: number
           account_loginid: string | null
           account_type: string
+          ai_config: Json
           current_price: number | null
           floating_pnl: number
           id: string
@@ -434,6 +435,7 @@ export type Database = {
           account_balance?: number
           account_loginid?: string | null
           account_type: string
+          ai_config?: Json
           current_price?: number | null
           floating_pnl?: number
           id?: string
@@ -464,6 +466,7 @@ export type Database = {
           account_balance?: number
           account_loginid?: string | null
           account_type?: string
+          ai_config?: Json
           current_price?: number | null
           floating_pnl?: number
           id?: string
