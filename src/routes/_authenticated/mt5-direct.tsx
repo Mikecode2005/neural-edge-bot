@@ -152,11 +152,6 @@ function Mt5DirectPage() {
     if ("error" in result) {
       toast.error("Close failed", { description: result.error });
     } else {
-        // load bots
-        (async () => {
-          const rows = await botList();
-          setBots(rows ?? []);
-        })();
       toast.success(`Position #${ticket} closed`);
       refreshPositions();
     }
