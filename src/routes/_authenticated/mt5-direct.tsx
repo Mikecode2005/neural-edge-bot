@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import {
@@ -7,22 +7,18 @@ import {
   PlugZap,
   Activity,
   Wallet,
-  TrendingUp,
-  TrendingDown,
   Clock,
-  AlertTriangle,
-  ChevronDown,
-  ChevronUp,
   RefreshCw,
-  Settings,
   BarChart3,
-  Zap,
   ExternalLink,
   Info,
   Play,
   Square,
-  Terminal,
   Shield,
+  ChevronDown,
+  ChevronUp,
+  Zap,
+  Trash2,
 } from "lucide-react";
 
 import { AppNav } from "@/components/AppNav";
@@ -36,80 +32,175 @@ import {
   mt5Connect,
   mt5Disconnect,
   mt5AccountInfo,
-  mt5GetPositions,
-  mt5PlaceOrder,
-  mt5ClosePosition,
-  mt5GetRates,
   mt5Status,
 } from "@/mt5-direct/api";
-import type { Mt5AccountInfo, Mt5Position, Mt5OrderResult } from "@/mt5-direct/types";
+import { mt5StartBot, mt5ListBots, mt5RunBotTick } from "@/mt5-direct/bot.functions";
+import {
+  stopBot,
+  listBotActivity,
+  listOpenBotPositions,
+  resetBotStats,
+} from "@/lib/bots/bots.functions";
+import type { Mt5AccountInfo } from "@/mt5-direct/types";
 
 export const Route = createFileRoute("/_authenticated/mt5-direct")({
-  head: () => ({ meta: [{ title: "MT5 Direct — MetaTrader 5 Trading" }] }),
+  head: () => ({ meta: [{ title: "MT5 Direct — AI Bots on MetaTrader 5" }] }),
   component: Mt5DirectPage,
 });
+
+interface BotRow {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  status: string;
+  interval_seconds: number;
+  min_confidence: number;
+  max_stake_per_trade: number;
+  min_stake_per_trade: number;
+  total_trades: number;
+  total_pnl: number;
+  wins?: number;
+  losses?: number;
+  locked_stake?: number;
+  floating_pnl?: number;
+  current_price?: number | null;
+  last_tick_at: string | null;
+  last_error: string | null;
+  account_balance?: number;
+  ai_config?: { volume?: number };
+}
+
+interface OpenPos {
+  id: string;
+  direction: "CALL" | "PUT";
+  stake: number;
+  entry_price: number;
+  current_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  floating_pnl: number;
+  external_contract_id: string | null;
+  opened_at: string;
+}
+
+interface ActivityEntry {
+  id: string;
+  timestamp: number;
+  action: string;
+  symbol: string;
+  direction: string;
+  confidence: number;
+  entryPrice: number | null;
+  stake: number | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  pnl: number | null;
+  reasoning: string;
+  obZone: string | null;
+  fvgZone: string | null;
+  riskCheck: string | null;
+}
+
+const MT5_SYMBOLS = [
+  "EURUSD",
+  "GBPUSD",
+  "USDJPY",
+  "AUDUSD",
+  "USDCAD",
+  "XAUUSD",
+  "BTCUSD",
+  "ETHUSD",
+  "Volatility 10 Index",
+  "Volatility 25 Index",
+  "Volatility 75 Index",
+];
 
 function Mt5DirectPage() {
   const fnConnect = useServerFn(mt5Connect);
   const fnDisconnect = useServerFn(mt5Disconnect);
   const fnAccount = useServerFn(mt5AccountInfo);
-  const fnPositions = useServerFn(mt5GetPositions);
-  const fnPlaceOrder = useServerFn(mt5PlaceOrder);
-  const fnClose = useServerFn(mt5ClosePosition);
-  const fnRates = useServerFn(mt5GetRates);
   const fnStatus = useServerFn(mt5Status);
+  const fnStart = useServerFn(mt5StartBot);
+  const fnList = useServerFn(mt5ListBots);
+  const fnTick = useServerFn(mt5RunBotTick);
+  const fnStop = useServerFn(stopBot);
+  const fnActivity = useServerFn(listBotActivity);
+  const fnPositions = useServerFn(listOpenBotPositions);
+  const fnReset = useServerFn(resetBotStats);
 
   const [connected, setConnected] = useState(false);
   const [account, setAccount] = useState<Mt5AccountInfo | null>(null);
-  const [positions, setPositions] = useState<Mt5Position[]>([]);
   const [connecting, setConnecting] = useState(false);
-  const [orderForm, setOrderForm] = useState({
-    symbol: "Volatility 10 Index",
-    type: "buy" as "buy" | "sell",
+
+  const [bots, setBots] = useState<BotRow[]>([]);
+  const [activity, setActivity] = useState<Map<string, ActivityEntry[]>>(new Map());
+  const [positions, setPositions] = useState<Map<string, OpenPos[]>>(new Map());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const loopsRef = useRef<Map<string, number>>(new Map());
+
+  const [form, setForm] = useState({
+    symbol: "EURUSD",
+    interval_seconds: 60,
+    min_confidence: 0.7,
+    max_stake_per_trade: 50,
+    min_stake_per_trade: 1,
+    account_balance: 1000,
     volume: 0.01,
-    sl: 0,
-    tp: 0,
+    account_type: "demo" as "demo" | "real",
   });
-  const [placing, setPlacing] = useState(false);
 
-  const connect = useCallback(async () => {
-    setConnecting(true);
-    const status = await fnConnect();
-    if (status.connected) {
-      setConnected(true);
-      setAccount(status.account ?? null);
-      toast.success("Connected to MT5");
-    } else {
-      toast.error("Connection failed", { description: status.error });
-    }
-    setConnecting(false);
-  }, [fnConnect]);
+  // ── Data loading ──
+  const mapActivity = (r: any): ActivityEntry => ({
+    id: r.id,
+    timestamp: new Date(r.created_at).getTime(),
+    action: r.action,
+    symbol: r.symbol,
+    direction: r.direction ?? "—",
+    confidence: Number(r.confidence ?? 0),
+    entryPrice: r.entry_price == null ? null : Number(r.entry_price),
+    stake: r.stake == null ? null : Number(r.stake),
+    stopLoss: r.stop_loss == null ? null : Number(r.stop_loss),
+    takeProfit: r.take_profit == null ? null : Number(r.take_profit),
+    pnl: r.pnl == null ? null : Number(r.pnl),
+    reasoning: r.reasoning,
+    obZone: r.ob_zone ?? null,
+    fvgZone: r.fvg_zone ?? null,
+    riskCheck: r.risk_check ?? null,
+  });
 
-  const disconnect = useCallback(async () => {
-    await fnDisconnect();
-    setConnected(false);
-    setAccount(null);
-    setPositions([]);
-    toast.message("Disconnected from MT5");
-  }, [fnDisconnect]);
+  const refreshBot = async (botId: string) => {
+    const [acts, pos] = await Promise.all([
+      fnActivity({ data: { bot_id: botId, limit: 100 } }) as Promise<any[]>,
+      fnPositions({ data: { bot_id: botId } }) as Promise<any[]>,
+    ]);
+    setActivity((prev) => {
+      const next = new Map(prev);
+      next.set(botId, acts.map(mapActivity));
+      return next;
+    });
+    setPositions((prev) => {
+      const next = new Map(prev);
+      next.set(botId, pos.map((p) => ({
+        id: p.id,
+        direction: p.direction,
+        stake: Number(p.stake ?? 0),
+        entry_price: Number(p.entry_price ?? 0),
+        current_price: p.current_price == null ? null : Number(p.current_price),
+        stop_loss: p.stop_loss == null ? null : Number(p.stop_loss),
+        take_profit: p.take_profit == null ? null : Number(p.take_profit),
+        floating_pnl: Number(p.floating_pnl ?? 0),
+        external_contract_id: p.external_contract_id ?? null,
+        opened_at: p.opened_at,
+      })));
+      return next;
+    });
+  };
 
-  const refreshAccount = useCallback(async () => {
-    const info = await fnAccount();
-    if ("error" in info) {
-      toast.error(info.error);
-    } else {
-      setAccount(info as Mt5AccountInfo);
-    }
-  }, [fnAccount]);
-
-  const refreshPositions = useCallback(async () => {
-    const pos = await fnPositions();
-    if ("error" in pos) {
-      toast.error(pos.error);
-    } else {
-      setPositions(pos as Mt5Position[]);
-    }
-  }, [fnPositions]);
+  const loadBots = async () => {
+    const rows = (await fnList()) as BotRow[];
+    setBots(rows);
+    await Promise.all(rows.slice(0, 20).map((b) => refreshBot(b.id).catch(() => {})));
+  };
 
   useEffect(() => {
     fnStatus().then((s) => {
@@ -118,36 +209,129 @@ function Mt5DirectPage() {
         if (s.account) setAccount(s.account);
       }
     });
-  }, [fnStatus]);
+    loadBots();
+    return () => {
+      loopsRef.current.forEach((id) => clearInterval(id));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const handlePlaceOrder = async () => {
-    setPlacing(true);
-    const result = await fnPlaceOrder({
-      data: {
-        symbol: orderForm.symbol,
-        type: orderForm.type,
-        volume: orderForm.volume,
-        sl: orderForm.sl > 0 ? orderForm.sl : undefined,
-        tp: orderForm.tp > 0 ? orderForm.tp : undefined,
-      },
-    });
-    if ("error" in result) {
-      toast.error("Order failed", { description: result.error });
+  // ── Connection ──
+  const connect = useCallback(async () => {
+    setConnecting(true);
+    const s = await fnConnect();
+    if (s.connected) {
+      setConnected(true);
+      setAccount(s.account ?? null);
+      toast.success("Connected to MT5");
     } else {
-      toast.success(`Order placed: ticket #${(result as Mt5OrderResult).ticket}`);
-      refreshPositions();
+      toast.error("Connection failed", { description: s.error });
     }
-    setPlacing(false);
+    setConnecting(false);
+  }, [fnConnect]);
+
+  const disconnect = useCallback(async () => {
+    await fnDisconnect();
+    setConnected(false);
+    setAccount(null);
+    toast.message("Disconnected");
+  }, [fnDisconnect]);
+
+  const refreshAccount = useCallback(async () => {
+    const info = await fnAccount();
+    if ("error" in info) toast.error(info.error);
+    else setAccount(info as Mt5AccountInfo);
+  }, [fnAccount]);
+
+  // ── Bot loop ──
+  const runTick = async (bot: BotRow) => {
+    try {
+      const res = (await fnTick({ data: { id: bot.id } })) as any;
+      if (!res?.ok && res?.error) {
+        toast.error(`${bot.symbol}: ${res.error}`, { duration: 3000 });
+      }
+      await refreshBot(bot.id);
+      await loadBots();
+    } catch (e: any) {
+      toast.error(e?.message ?? "Tick failed");
+    }
   };
 
-  const handleClosePosition = async (ticket: number) => {
-    const result = await fnClose({ data: { ticket } });
-    if ("error" in result) {
-      toast.error("Close failed", { description: result.error });
-    } else {
-      toast.success(`Position #${ticket} closed`);
-      refreshPositions();
+  const startLoop = (bot: BotRow) => {
+    if (loopsRef.current.has(bot.id)) return;
+    runTick(bot);
+    const handle = window.setInterval(() => runTick(bot), bot.interval_seconds * 1000);
+    loopsRef.current.set(bot.id, handle);
+  };
+
+  useEffect(() => {
+    bots.forEach((b) => {
+      if (b.status === "running") startLoop(b);
+      else {
+        const h = loopsRef.current.get(b.id);
+        if (h) {
+          clearInterval(h);
+          loopsRef.current.delete(b.id);
+        }
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bots]);
+
+  const onCreate = async () => {
+    if (!connected) {
+      toast.error("Connect to MT5 first");
+      return;
     }
+    if (form.account_type === "real") {
+      if (!confirm("Start an MT5 bot on a REAL account? This will place live trades with real money.")) return;
+    }
+    try {
+      const row = (await fnStart({ data: form })) as BotRow;
+      setBots((p) => [row, ...p]);
+      toast.success(`MT5 bot started on ${row.symbol}`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Failed to start bot");
+    }
+  };
+
+  const onStop = async (id: string) => {
+    const h = loopsRef.current.get(id);
+    if (h) {
+      clearInterval(h);
+      loopsRef.current.delete(id);
+    }
+    await fnStop({ data: { id } });
+    loadBots();
+    toast.message("Bot stopped");
+  };
+
+  const onReset = async (id: string) => {
+    if (!confirm("Reset trade stats & P&L for this bot?")) return;
+    await fnReset({ data: { id } });
+    toast.success("Stats reset");
+    loadBots();
+  };
+
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const getStats = (bot: BotRow) => {
+    const logs = activity.get(bot.id) ?? [];
+    const trades = logs.filter((l) => l.action === "EXIT");
+    const wins = trades.filter((t) => (t.pnl ?? 0) > 0).length;
+    const losses = trades.filter((t) => (t.pnl ?? 0) < 0).length;
+    const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0;
+    const scans = logs.filter((l) => l.action === "SCAN").length;
+    const entries = logs.filter((l) => l.action === "ENTRY").length;
+    const errors = logs.filter((l) => l.action === "ERROR").length;
+    return { wins, losses, winRate, scans, entries, errors, trades: trades.length };
   };
 
   return (
@@ -158,19 +342,17 @@ function Mt5DirectPage() {
         <header className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-              <ExternalLink className="size-5 text-primary" /> MT5 Direct
+              <ExternalLink className="size-5 text-primary" /> MT5 Direct — AI Bots
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Connect to MetaTrader 5 via the Python FastAPI bridge.
-              The app uses the bridge service to access MT5 and trade on your account.
+              OB+FVG strategy runs on MT5 candles, chooses direction, SL &amp; TP, and executes
+              through the MetaTrader 5 bridge with a locked stake.
             </p>
           </div>
           <div className="flex items-center gap-2">
             {connected ? (
               <>
-                <Badge variant="default" className="gap-1">
-                  <Activity className="size-3" /> Connected
-                </Badge>
+                <Badge variant="default" className="gap-1"><Activity className="size-3" /> Connected</Badge>
                 <Button size="sm" variant="outline" onClick={refreshAccount} className="gap-1">
                   <RefreshCw className="size-3.5" /> Refresh
                 </Button>
@@ -181,221 +363,332 @@ function Mt5DirectPage() {
             ) : (
               <Button size="sm" onClick={connect} disabled={connecting} className="gap-1">
                 <Plug className="size-3.5" />
-                {connecting ? "Connecting..." : "Connect to MT5"}
+                {connecting ? "Connecting…" : "Connect to MT5"}
               </Button>
             )}
           </div>
         </header>
 
         {!connected && (
-          <div className="glass rounded-xl p-8 text-center">
+          <div className="glass rounded-xl p-8 text-center space-y-2">
             <p className="text-muted-foreground">
-              Click "Connect to MT5" to establish a connection using credentials from your .env
-              file (<code className="bg-card px-1 rounded">MT5_ACCOUNT_LOGIN</code>,{" "}
-              <code className="bg-card px-1 rounded">MT5_ACCOUNT_PASSWORD</code>,{" "}
-              <code className="bg-card px-1 rounded">MT5_ACCOUNT_SERVER</code>).
+              Click "Connect to MT5" to open the bridge session using your{" "}
+              <code className="bg-card px-1 rounded">MT5_ACCOUNT_LOGIN / PASSWORD / SERVER</code> env vars.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Bots need an active MT5 connection to fetch candles and place orders.
             </p>
           </div>
         )}
 
         {connected && account && (
-          <>
-            {/* Account Info */}
-            <div className="glass rounded-xl p-5 space-y-4">
-              <h2 className="text-sm font-semibold flex items-center gap-2">
-                <Wallet className="size-3.5 text-primary" /> Account Info
-              </h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                <InfoBadge label="Server" value={account.server} />
-                <InfoBadge label="Name" value={account.name} />
-                <InfoBadge label="Currency" value={account.currency} />
-                <InfoBadge label="Leverage" value={`1:${account.leverage}`} />
-                <InfoBadge
-                  label="Balance"
-                  value={`$${account.balance.toFixed(2)}`}
-                  tone={account.balance >= 0 ? "bull" : "bear"}
-                />
-                <InfoBadge
-                  label="Equity"
-                  value={`$${account.equity.toFixed(2)}`}
-                  tone={account.equity >= 0 ? "bull" : "bear"}
-                />
-                <InfoBadge label="Margin" value={`$${account.margin.toFixed(2)}`} />
-                <InfoBadge
-                  label="Free Margin"
-                  value={`$${account.marginFree.toFixed(2)}`}
-                  tone={account.marginFree > 0 ? "bull" : "bear"}
-                />
-                <InfoBadge
-                  label="Margin Level"
-                  value={`${account.marginLevel.toFixed(1)}%`}
-                  tone={account.marginLevel > 100 ? "bull" : "bear"}
-                />
-              </div>
+          <div className="glass rounded-xl p-5 space-y-4">
+            <h2 className="text-sm font-semibold flex items-center gap-2">
+              <Wallet className="size-3.5 text-primary" /> MT5 Account
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              <InfoBadge label="Server" value={account.server} />
+              <InfoBadge label="Name" value={account.name} />
+              <InfoBadge label="Currency" value={account.currency} />
+              <InfoBadge label="Leverage" value={`1:${account.leverage}`} />
+              <InfoBadge label="Balance" value={`$${account.balance.toFixed(2)}`} tone={account.balance >= 0 ? "bull" : "bear"} />
+              <InfoBadge label="Equity" value={`$${account.equity.toFixed(2)}`} tone={account.equity >= 0 ? "bull" : "bear"} />
+              <InfoBadge label="Margin" value={`$${account.margin.toFixed(2)}`} />
+              <InfoBadge label="Free Margin" value={`$${account.marginFree.toFixed(2)}`} tone={account.marginFree > 0 ? "bull" : "bear"} />
             </div>
-
-            {/* Order Panel */}
-            <div className="glass rounded-xl p-5 space-y-4">
-              <h2 className="text-sm font-semibold flex items-center gap-2">
-                <Zap className="size-3.5 text-primary" /> Place Order
-              </h2>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <div>
-                  <Label className="text-xs">Symbol</Label>
-                  <Input
-                    value={orderForm.symbol}
-                    onChange={(e) => setOrderForm({ ...orderForm, symbol: e.target.value })}
-                    className="text-sm"
-                  />
-                </div>
-                <div>
-                  <Label className="text-xs">Type</Label>
-                  <select
-                    className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
-                    value={orderForm.type}
-                    onChange={(e) => setOrderForm({ ...orderForm, type: e.target.value as "buy" | "sell" })}
-                  >
-                    <option value="buy">Buy</option>
-                    <option value="sell">Sell</option>
-                  </select>
-                </div>
-                <div>
-                  <Label className="text-xs">Volume (lots)</Label>
-                  <Input
-                    type="number" step={0.01} min={0.01}
-                    value={orderForm.volume}
-                    onChange={(e) => setOrderForm({ ...orderForm, volume: Number(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label className="text-xs">Stop Loss (price)</Label>
-                  <Input
-                    type="number" step={0.1}
-                    value={orderForm.sl}
-                    onChange={(e) => setOrderForm({ ...orderForm, sl: Number(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label className="text-xs">Take Profit (price)</Label>
-                  <Input
-                    type="number" step={0.1}
-                    value={orderForm.tp}
-                    onChange={(e) => setOrderForm({ ...orderForm, tp: Number(e.target.value) })}
-                  />
-                </div>
-              </div>
-              <Button onClick={handlePlaceOrder} disabled={placing} className="gap-1.5">
-                <Play className="size-3.5" /> {placing ? "Placing..." : "Place Order"}
-              </Button>
-            </div>
-
-            {/* Open Positions */}
-            <div className="glass rounded-xl overflow-hidden">
-              <div className="p-4 flex items-center justify-between">
-                <h2 className="text-sm font-semibold flex items-center gap-2">
-                  <BarChart3 className="size-3.5 text-primary" /> Open Positions
-                </h2>
-                <Button size="sm" variant="ghost" onClick={refreshPositions} className="gap-1 h-7 text-xs">
-                  <RefreshCw className="size-3" /> Refresh
-                </Button>
-              </div>
-              {positions.length === 0 ? (
-                <div className="p-4 border-t border-border">
-                  <p className="text-xs text-muted-foreground text-center py-4">No open positions.</p>
-                </div>
-              ) : (
-                <div className="border-t border-border overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="bg-card/60">
-                      <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-                        <th className="px-3 py-2">Ticket</th>
-                        <th className="px-3 py-2">Symbol</th>
-                        <th className="px-3 py-2">Type</th>
-                        <th className="px-3 py-2">Volume</th>
-                        <th className="px-3 py-2">Open Price</th>
-                        <th className="px-3 py-2">Current Price</th>
-                        <th className="px-3 py-2">SL</th>
-                        <th className="px-3 py-2">TP</th>
-                        <th className="px-3 py-2">Profit</th>
-                        <th className="px-3 py-2">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {positions.map((p) => (
-                        <tr key={p.ticket} className="border-t border-border/30 hover:bg-card/30">
-                          <td className="px-3 py-1.5 numeric">{p.ticket}</td>
-                          <td className="px-3 py-1.5">{p.symbol}</td>
-                          <td className={`px-3 py-1.5 font-semibold ${p.type === "buy" ? "text-bull" : "text-bear"}`}>
-                            {p.type.toUpperCase()}
-                          </td>
-                          <td className="px-3 py-1.5 numeric">{p.volume}</td>
-                          <td className="px-3 py-1.5 numeric">{p.priceOpen.toFixed(4)}</td>
-                          <td className="px-3 py-1.5 numeric">{p.priceCurrent.toFixed(4)}</td>
-                          <td className="px-3 py-1.5 numeric">{p.sl?.toFixed(4) ?? "—"}</td>
-                          <td className="px-3 py-1.5 numeric">{p.tp?.toFixed(4) ?? "—"}</td>
-                          <td className={`px-3 py-1.5 numeric font-semibold ${p.profit >= 0 ? "text-bull" : "text-bear"}`}>
-                            {p.profit >= 0 ? "+" : ""}${p.profit.toFixed(2)}
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              className="h-6 text-[10px] px-2"
-                              onClick={() => handleClosePosition(p.ticket)}
-                            >
-                              <Square className="size-2.5" /> Close
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            {/* Connection guide */}
-            <div className="glass rounded-xl p-5">
-              <div className="flex items-start gap-3">
-                <Info className="size-5 text-primary shrink-0 mt-0.5" />
-                <div className="text-xs text-muted-foreground space-y-1">
-                  <p>
-                    <strong className="text-foreground">Library:</strong>{" "}
-                    This integration uses the Python FastAPI bridge service to access MetaTrader 5.
-                    Set <code className="bg-card px-1 rounded">MT5_LIB_MODE=python-bridge</code> and point
-                    <code className="bg-card px-1 rounded">VITE_MT5_BRIDGE_URL</code> to the bridge endpoint.
-                  </p>
-                  <p>
-                    <strong className="text-foreground">Credentials:</strong> Configured via{" "}
-                    <code className="bg-card px-1 rounded">MT5_ACCOUNT_LOGIN</code>,{" "}
-                    <code className="bg-card px-1 rounded">MT5_ACCOUNT_PASSWORD</code>,{" "}
-                    <code className="bg-card px-1 rounded">MT5_ACCOUNT_SERVER</code> in .env.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </>
+          </div>
         )}
+
+        {/* ── New MT5 Bot ── */}
+        <div className="glass rounded-xl p-5 space-y-4">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Zap className="size-3.5 text-primary" /> New MT5 Bot
+          </h2>
+          <p className="text-xs text-muted-foreground -mt-2">
+            Same OB+FVG engine as the Bots page — analyzes MT5 candles, sets SL/TP from the
+            active order block, and sends a market order at your locked stake.
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            <div>
+              <Label className="text-xs">Symbol</Label>
+              <select
+                className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
+                value={form.symbol}
+                onChange={(e) => setForm({ ...form, symbol: e.target.value })}
+              >
+                {MT5_SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Account</Label>
+              <select
+                className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
+                value={form.account_type}
+                onChange={(e) => setForm({ ...form, account_type: e.target.value as "demo" | "real" })}
+              >
+                <option value="demo">Demo</option>
+                <option value="real">Real (live money)</option>
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Interval (sec)</Label>
+              <Input type="number" min={10} max={3600} value={form.interval_seconds}
+                onChange={(e) => setForm({ ...form, interval_seconds: Number(e.target.value) })} />
+            </div>
+            <div>
+              <Label className="text-xs">Min Confidence</Label>
+              <Input type="number" step={0.05} min={0} max={1} value={form.min_confidence}
+                onChange={(e) => setForm({ ...form, min_confidence: Number(e.target.value) })} />
+            </div>
+            <div>
+              <Label className="text-xs">Lock-in Stake ($)</Label>
+              <Input type="number" step={1} min={1} value={form.max_stake_per_trade}
+                onChange={(e) => setForm({ ...form, max_stake_per_trade: Number(e.target.value) })} />
+            </div>
+            <div>
+              <Label className="text-xs">Min Stake ($)</Label>
+              <Input type="number" step={0.5} min={0.35} value={form.min_stake_per_trade}
+                onChange={(e) => setForm({ ...form, min_stake_per_trade: Number(e.target.value) })} />
+            </div>
+            <div>
+              <Label className="text-xs">Account Balance ($)</Label>
+              <Input type="number" step={10} min={1} value={form.account_balance}
+                onChange={(e) => setForm({ ...form, account_balance: Number(e.target.value) })} />
+            </div>
+            <div>
+              <Label className="text-xs">Volume (lots)</Label>
+              <Input type="number" step={0.01} min={0.01} value={form.volume}
+                onChange={(e) => setForm({ ...form, volume: Number(e.target.value) })} />
+            </div>
+          </div>
+          <Button onClick={onCreate} className="gap-1.5">
+            <Play className="size-3.5" /> Start MT5 Bot
+          </Button>
+        </div>
+
+        {/* ── Running Bots ── */}
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <BarChart3 className="size-3.5 text-primary" /> Your MT5 Bots ({bots.length})
+          </h2>
+
+          {bots.length === 0 && (
+            <div className="glass rounded-xl p-6 text-center text-sm text-muted-foreground">
+              No MT5 bots yet — create one above.
+            </div>
+          )}
+
+          {bots.map((bot) => {
+            const stats = getStats(bot);
+            const isOpen = expanded.has(bot.id);
+            const logs = activity.get(bot.id) ?? [];
+            const pos = positions.get(bot.id) ?? [];
+            const balance = Number(bot.account_balance ?? 0);
+            const locked = Number(bot.locked_stake ?? 0);
+            const floating = pos.reduce((s, p) => s + p.floating_pnl, 0);
+            const available = balance + Number(bot.total_pnl ?? 0) - locked;
+            const equity = available + locked + floating;
+            return (
+              <div key={bot.id} className="glass rounded-xl overflow-hidden">
+                <div className="p-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <Badge variant={bot.status === "running" ? "default" : "secondary"} className="gap-1">
+                      {bot.status === "running" ? <Activity className="size-3" /> : <Square className="size-3" />}
+                      {bot.status}
+                    </Badge>
+                    <span className="font-semibold text-sm">{bot.symbol}</span>
+                    <span className="text-xs text-muted-foreground">{bot.timeframe} · every {bot.interval_seconds}s</span>
+                    <span className="text-xs text-muted-foreground">min conf {(bot.min_confidence * 100).toFixed(0)}%</span>
+                    <span className="text-xs text-muted-foreground">stake ${bot.max_stake_per_trade}</span>
+                    {bot.ai_config?.volume && <span className="text-xs text-muted-foreground">{bot.ai_config.volume} lots</span>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="ghost" onClick={() => toggleExpand(bot.id)} className="h-7 gap-1 text-xs">
+                      {isOpen ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                      Details
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => onReset(bot.id)} className="h-7 gap-1 text-xs">
+                      <Trash2 className="size-3" /> Reset
+                    </Button>
+                    {bot.status === "running" ? (
+                      <Button size="sm" variant="destructive" onClick={() => onStop(bot.id)} className="h-7 gap-1 text-xs">
+                        <Square className="size-3" /> Stop
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+
+                {/* stats row */}
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-2 px-4 pb-3">
+                  <MetaCell label="Balance" value={`$${balance.toFixed(2)}`} />
+                  <MetaCell label="Available" value={`$${available.toFixed(2)}`} tone={available >= balance ? "bull" : "bear"} />
+                  <MetaCell label="Locked" value={`$${locked.toFixed(2)}`} />
+                  <MetaCell label="Open P&L" value={`${floating >= 0 ? "+" : ""}$${floating.toFixed(2)}`} tone={floating >= 0 ? "bull" : "bear"} />
+                  <MetaCell label="Total P&L" value={`${(bot.total_pnl ?? 0) >= 0 ? "+" : ""}$${Number(bot.total_pnl ?? 0).toFixed(2)}`} tone={(bot.total_pnl ?? 0) >= 0 ? "bull" : "bear"} />
+                  <MetaCell label="Equity" value={`$${equity.toFixed(2)}`} />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-2 px-4 pb-4">
+                  <MetaCell label="Trades" value={String(stats.trades)} />
+                  <MetaCell label="Wins" value={String(stats.wins)} tone="bull" />
+                  <MetaCell label="Losses" value={String(stats.losses)} tone="bear" />
+                  <MetaCell label="Win rate" value={`${stats.winRate.toFixed(0)}%`} />
+                  <MetaCell label="Scans" value={String(stats.scans)} />
+                  <MetaCell label="Errors" value={String(stats.errors)} tone={stats.errors ? "bear" : undefined} />
+                </div>
+
+                {bot.last_error && (
+                  <div className="mx-4 mb-3 text-xs px-3 py-2 rounded-md bg-destructive/10 border border-destructive/30 text-destructive">
+                    Last error: {bot.last_error}
+                  </div>
+                )}
+                {bot.last_tick_at && (
+                  <div className="px-4 pb-3 text-[10px] text-muted-foreground flex items-center gap-1">
+                    <Clock className="size-3" /> Last tick {new Date(bot.last_tick_at).toLocaleTimeString()}
+                  </div>
+                )}
+
+                {isOpen && (
+                  <div className="border-t border-border/60 divide-y divide-border/60">
+                    {/* Open positions */}
+                    <div className="p-4">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1">
+                        <Shield className="size-3" /> Open positions ({pos.length})
+                      </h3>
+                      {pos.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No open positions.</p>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                                <th className="px-2 py-1">Ticket</th>
+                                <th className="px-2 py-1">Dir</th>
+                                <th className="px-2 py-1">Entry</th>
+                                <th className="px-2 py-1">Now</th>
+                                <th className="px-2 py-1">SL</th>
+                                <th className="px-2 py-1">TP</th>
+                                <th className="px-2 py-1">Stake</th>
+                                <th className="px-2 py-1">Floating</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pos.map((p) => (
+                                <tr key={p.id} className="border-t border-border/30">
+                                  <td className="px-2 py-1 numeric">{p.external_contract_id ?? "—"}</td>
+                                  <td className={`px-2 py-1 font-semibold ${p.direction === "CALL" ? "text-bull" : "text-bear"}`}>{p.direction}</td>
+                                  <td className="px-2 py-1 numeric">{p.entry_price.toFixed(4)}</td>
+                                  <td className="px-2 py-1 numeric">{p.current_price?.toFixed(4) ?? "—"}</td>
+                                  <td className="px-2 py-1 numeric">{p.stop_loss?.toFixed(4) ?? "—"}</td>
+                                  <td className="px-2 py-1 numeric">{p.take_profit?.toFixed(4) ?? "—"}</td>
+                                  <td className="px-2 py-1 numeric">${p.stake.toFixed(2)}</td>
+                                  <td className={`px-2 py-1 numeric font-semibold ${p.floating_pnl >= 0 ? "text-bull" : "text-bear"}`}>
+                                    {p.floating_pnl >= 0 ? "+" : ""}${p.floating_pnl.toFixed(2)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Activity feed */}
+                    <div className="p-4">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1">
+                        <Terminal /> Activity ({logs.length})
+                      </h3>
+                      <div className="max-h-[420px] overflow-y-auto space-y-1">
+                        {logs.length === 0 && (
+                          <p className="text-xs text-muted-foreground">No activity yet — waiting for the first tick.</p>
+                        )}
+                        {logs.map((l) => (
+                          <div key={l.id} className="text-[11px] leading-snug px-2 py-1.5 rounded bg-card/40 border border-border/30">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-muted-foreground tabular-nums">{new Date(l.timestamp).toLocaleTimeString()}</span>
+                              <ActionBadge action={l.action} />
+                              {l.direction !== "—" && <span className={`font-semibold ${l.direction === "CALL" ? "text-bull" : l.direction === "PUT" ? "text-bear" : ""}`}>{l.direction}</span>}
+                              <span>{(l.confidence * 100).toFixed(0)}%</span>
+                              {l.entryPrice != null && <span className="numeric">@ {l.entryPrice.toFixed(4)}</span>}
+                              {l.stake != null && <span>${l.stake.toFixed(2)}</span>}
+                              {l.pnl != null && (
+                                <span className={`font-semibold ${l.pnl >= 0 ? "text-bull" : "text-bear"}`}>
+                                  {l.pnl >= 0 ? "+" : ""}${l.pnl.toFixed(2)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-muted-foreground mt-0.5">{l.reasoning}</div>
+                            {l.riskCheck && <div className="text-[10px] text-muted-foreground/80 mt-0.5">{l.riskCheck}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Guide */}
+        <div className="glass rounded-xl p-5">
+          <div className="flex items-start gap-3">
+            <Info className="size-5 text-primary shrink-0 mt-0.5" />
+            <div className="text-xs text-muted-foreground space-y-1">
+              <p>
+                <strong className="text-foreground">How it works:</strong> Each MT5 bot tick fetches
+                candles from your broker, runs the OB+FVG engine (the same one used in the Bots page
+                and the backtester), and if a setup exceeds your confidence threshold it sends a
+                MetaTrader 5 market order with the analyzed stop-loss and take-profit levels. The
+                lock-in stake caps the risk exposure per trade.
+              </p>
+              <p>
+                <strong className="text-foreground">Bridge:</strong>{" "}
+                <code className="bg-card px-1 rounded">MT5_LIB_MODE=python-bridge</code> +{" "}
+                <code className="bg-card px-1 rounded">VITE_MT5_BRIDGE_URL</code> point to the FastAPI
+                bridge that connects to your MT5 terminal.
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function InfoBadge({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: "bull" | "bear";
-}) {
+function InfoBadge({ label, value, tone }: { label: string; value: string; tone?: "bull" | "bear" }) {
   return (
     <div className="bg-card/50 rounded-lg px-3 py-2 border border-border/60">
       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
-      <p className={`text-sm font-semibold numeric mt-0.5 ${tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""}`}>
-        {value}
-      </p>
+      <p className={`text-sm font-semibold numeric mt-0.5 ${tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""}`}>{value}</p>
     </div>
   );
+}
+
+function MetaCell({ label, value, tone }: { label: string; value: string; tone?: "bull" | "bear" }) {
+  return (
+    <div className="bg-card/30 rounded-md px-2.5 py-1.5 border border-border/40">
+      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className={`text-xs font-semibold numeric ${tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""}`}>{value}</p>
+    </div>
+  );
+}
+
+function ActionBadge({ action }: { action: string }) {
+  const map: Record<string, string> = {
+    SCAN: "bg-muted text-muted-foreground",
+    ENTRY: "bg-primary/20 text-primary",
+    EXIT: "bg-accent/20 text-accent-foreground",
+    ERROR: "bg-destructive/20 text-destructive",
+    SKIP: "bg-muted text-muted-foreground",
+    PROTECTION: "bg-yellow-500/20 text-yellow-500",
+  };
+  return (
+    <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${map[action] ?? "bg-muted"}`}>
+      {action}
+    </span>
+  );
+}
+
+function Terminal() {
+  return <span className="text-primary">▸</span>;
 }
