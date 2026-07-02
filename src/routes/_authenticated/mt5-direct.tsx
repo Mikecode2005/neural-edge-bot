@@ -92,11 +92,6 @@ function Mt5DirectPage() {
     setConnecting(false);
   }, [fnConnect]);
 
-      const fnBotStart = useServerFn(botStart);
-      const fnBotStop = useServerFn(botStop);
-      const fnBotList = useServerFn(botList);
-      const fnBotActivity = useServerFn(botActivity);
-      const fnBotOpenPositions = useServerFn(botOpenPositions);
   const disconnect = useCallback(async () => {
     await fnDisconnect();
     setConnected(false);
