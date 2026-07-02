@@ -164,36 +164,6 @@ function Mt5DirectPage() {
       <div className="max-w-7xl mx-auto px-6 py-6 space-y-6">
         <header className="flex items-center justify-between">
           <div>
-      const handleStartBot = async () => {
-        const res = await fnBotStart({ data: botForm });
-        if (res?.ok) {
-          toast.success("Bot started");
-          const rows = await fnBotList();
-          setBots(rows ?? []);
-        } else {
-          toast.error("Failed to start bot");
-        }
-      };
-
-      const handleStopBot = async (id: string) => {
-        await fnBotStop({ data: { id } });
-        toast.message("Bot stopped");
-        const rows = await fnBotList();
-        setBots(rows ?? []);
-      };
-
-      const handleViewActivity = async (id: string) => {
-        const rows = await fnBotActivity({ data: { id } });
-        setSelectedActivity(rows ?? []);
-        setSelectedBotId(id);
-      };
-
-      const handleShowBotPositions = async (id: string) => {
-        const rows = await fnBotOpenPositions({ data: { id } });
-        setPositions(rows ?? []);
-        setSelectedBotId(id);
-        toast.message("Loaded bot positions");
-      };
             <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
               <ExternalLink className="size-5 text-primary" /> MT5 Direct
             </h1>
