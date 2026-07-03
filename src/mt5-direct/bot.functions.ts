@@ -56,9 +56,7 @@ function ratesToCandles(rates: Mt5Rate[]): Candle[] {
   }));
 }
 
-function secondsToMt5Timeframe(
-  s: number,
-): "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d" {
+function secondsToMt5Timeframe(s: number): "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d" {
   if (s <= 60) return "1m";
   if (s <= 300) return "5m";
   if (s <= 900) return "15m";
@@ -151,7 +149,22 @@ export const mt5ListBots = createServerFn({ method: "GET" })
 export const mt5RunBotTick = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
-    z.object({ id: z.string().uuid() }).parse(d),
+    z
+      .object({
+        id: z.string().uuid(),
+        candles: z
+          .array(
+            z.object({
+              epoch: z.number(),
+              open: z.number(),
+              high: z.number(),
+              low: z.number(),
+              close: z.number(),
+            }),
+          )
+          .optional(),
+      })
+      .parse(d),
   )
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -175,7 +188,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     } catch (e: any) {
       await supabaseAdmin
         .from("bot_runs")
-        .update({ last_error: e?.message ?? "MT5 not connected", last_tick_at: new Date().toISOString() } as any)
+        .update({
+          last_error: e?.message ?? "MT5 not connected",
+          last_tick_at: new Date().toISOString(),
+        } as any)
         .eq("id", data.id);
       await supabaseAdmin.from("bot_activity").insert({
         user_id: context.userId,
@@ -188,8 +204,12 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       return { ok: false, error: e?.message ?? "MT5 bridge unreachable" };
     }
 
-    const rates = await mt5.rates((bot as any).symbol, timeframe, 220);
-    const candles = ratesToCandles(rates);
+    // Prefer externally supplied candles when available. This lets Deriv-derived
+    // synthetic index data drive the analysis while MT5 remains the execution venue.
+    const candles =
+      data.candles && data.candles.length >= 61
+        ? (data.candles as Candle[])
+        : ratesToCandles(await mt5.rates((bot as any).symbol, timeframe, 220));
     const last = candles.at(-1);
     if (!last) return { ok: false, error: "No candles" };
 
@@ -217,7 +237,8 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         take_profit: (pos as any).take_profit == null ? null : Number((pos as any).take_profit),
         stake: Number((pos as any).stake),
         opened_epoch: Number((pos as any).opened_epoch ?? 0),
-        expires_epoch: (pos as any).expires_epoch == null ? null : Number((pos as any).expires_epoch),
+        expires_epoch:
+          (pos as any).expires_epoch == null ? null : Number((pos as any).expires_epoch),
       };
       const mark = markOpenPosition(like, last);
 
@@ -266,7 +287,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
             total_trades: Number((bot as any).total_trades ?? 0) + 1,
             wins: Number((bot as any).wins ?? 0) + (mark.outcome === "win" ? 1 : 0),
             losses: Number((bot as any).losses ?? 0) + (mark.outcome === "loss" ? 1 : 0),
-            locked_stake: Math.max(0, Number((bot as any).locked_stake ?? 0) - Number((pos as any).stake)),
+            locked_stake: Math.max(
+              0,
+              Number((bot as any).locked_stake ?? 0) - Number((pos as any).stake),
+            ),
           } as any)
           .eq("id", data.id);
       } else {
@@ -302,16 +326,35 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
             symbol: (bot as any).symbol,
             timeframe: bot.timeframe ?? "1m",
             candles: candles.slice(-60),
-            ob_zones: obFvgAnalysis.activeOB ? [{ type: obFvgAnalysis.activeOB.kind, top: obFvgAnalysis.activeOB.top, bottom: obFvgAnalysis.activeOB.bottom }] : [],
-            fvg_zones: obFvgAnalysis.activeFVG ? [{ type: obFvgAnalysis.activeFVG.kind, top: obFvgAnalysis.activeFVG.top, bottom: obFvgAnalysis.activeFVG.bottom }] : [],
+            ob_zones: obFvgAnalysis.activeOB
+              ? [
+                  {
+                    type: obFvgAnalysis.activeOB.kind,
+                    top: obFvgAnalysis.activeOB.top,
+                    bottom: obFvgAnalysis.activeOB.bottom,
+                  },
+                ]
+              : [],
+            fvg_zones: obFvgAnalysis.activeFVG
+              ? [
+                  {
+                    type: obFvgAnalysis.activeFVG.kind,
+                    top: obFvgAnalysis.activeFVG.top,
+                    bottom: obFvgAnalysis.activeFVG.bottom,
+                  },
+                ]
+              : [],
             current_price: last.close,
             balance: available,
           },
         });
         const qwen = qwenResult as any;
-        const direction = qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
+        const direction =
+          qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
         decision = {
-          shouldTrade: direction !== "NONE" && Number(qwen.confidence ?? 0) >= Number((bot as any).min_confidence ?? 0.65),
+          shouldTrade:
+            direction !== "NONE" &&
+            Number(qwen.confidence ?? 0) >= Number((bot as any).min_confidence ?? 0.65),
           direction: direction as "CALL" | "PUT" | "NONE",
           confidence: Number(qwen.confidence ?? 0),
           entryPrice: last.close,
@@ -385,13 +428,13 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     const tradeMode = symInfo?.tradeMode ?? "enabled";
     const isBuy = decision.direction === "CALL";
     const isSell = decision.direction === "PUT";
-    
+
     // For shortonly symbols (only SELL allowed), flip BUY to SELL
     // For longonly symbols (only BUY allowed), flip SELL to BUY
     let adjustedDirection = decision.direction;
     let adjustedIsBuy = isBuy;
     let adjustedIsSell = isSell;
-    
+
     if (tradeMode === "shortonly" && isBuy) {
       adjustedDirection = "PUT";
       adjustedIsBuy = false;
@@ -401,10 +444,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       adjustedIsBuy = true;
       adjustedIsSell = false;
     }
-    
+
     const volume = symInfo
-      ? normalizeVolume(Number(((bot as any).ai_config?.volume) ?? 0.01), symInfo)
-      : Number(((bot as any).ai_config?.volume) ?? 0.01);
+      ? normalizeVolume(Number((bot as any).ai_config?.volume ?? 0.01), symInfo)
+      : Number((bot as any).ai_config?.volume ?? 0.01);
     const digits = symInfo?.digits ?? 5;
     const sl = decision.stopLoss == null ? undefined : roundToDigits(decision.stopLoss, digits);
     const tp = decision.takeProfit == null ? undefined : roundToDigits(decision.takeProfit, digits);

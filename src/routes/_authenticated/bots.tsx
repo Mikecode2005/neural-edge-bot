@@ -47,6 +47,7 @@ import {
   recordBotDerivTrade,
   pushCandlesToStore,
 } from "@/lib/bots/bots.functions";
+import { mt5RunBotTick } from "@/mt5-direct/bot.functions";
 import { DERIV_SYMBOLS } from "@/lib/deriv-ws";
 import { getDerivWS, type DerivCandle } from "@/lib/deriv/ws";
 
@@ -78,6 +79,21 @@ interface BotRow {
   last_error: string | null;
   market_mode: string;
   account_balance?: number;
+}
+
+const DERIV_SYMBOL_BY_MT5_SYMBOL: Record<string, string> = {
+  "Volatility 10 Index": "R_10",
+  "Volatility 10 (1s) Index": "1HZ10V",
+  "Volatility 15 Index": "R_15",
+  "Volatility 15 (1s) Index": "1HZ15V",
+  "Volatility 25 Index": "R_25",
+  "Volatility 25 (1s) Index": "1HZ25V",
+};
+
+function getAnalysisSymbol(bot: BotRow) {
+  return bot.market_mode === "mt5"
+    ? (DERIV_SYMBOL_BY_MT5_SYMBOL[bot.symbol] ?? bot.symbol)
+    : bot.symbol;
 }
 
 interface OpenBotPosition {
@@ -125,6 +141,7 @@ function BotsPage() {
   const fnActivity = useServerFn(listBotActivity);
   const fnOpenPositions = useServerFn(listOpenBotPositions);
   const fnServerTick = useServerFn(runBotServerTick);
+  const fnMt5Tick = useServerFn(mt5RunBotTick);
   const fnAnalyzeDecision = useServerFn(analyzeBotDecision);
   const fnRecordDerivTrade = useServerFn(recordBotDerivTrade);
 
@@ -197,17 +214,20 @@ function BotsPage() {
     });
     setOpenPositions((prev) => {
       const next = new Map(prev);
-      next.set(botId, positions.map((p) => ({
-        id: p.id,
-        direction: p.direction,
-        stake: Number(p.stake ?? 0),
-        entry_price: Number(p.entry_price ?? 0),
-        current_price: p.current_price == null ? null : Number(p.current_price),
-        stop_loss: p.stop_loss == null ? null : Number(p.stop_loss),
-        take_profit: p.take_profit == null ? null : Number(p.take_profit),
-        floating_pnl: Number(p.floating_pnl ?? 0),
-        opened_at: p.opened_at,
-      })));
+      next.set(
+        botId,
+        positions.map((p) => ({
+          id: p.id,
+          direction: p.direction,
+          stake: Number(p.stake ?? 0),
+          entry_price: Number(p.entry_price ?? 0),
+          current_price: p.current_price == null ? null : Number(p.current_price),
+          stop_loss: p.stop_loss == null ? null : Number(p.stop_loss),
+          take_profit: p.take_profit == null ? null : Number(p.take_profit),
+          floating_pnl: Number(p.floating_pnl ?? 0),
+          opened_at: p.opened_at,
+        })),
+      );
       return next;
     });
   };
@@ -234,7 +254,8 @@ function BotsPage() {
   };
 
   const handleResetStats = async (botId: string) => {
-    if (!confirm("Are you sure you want to reset trade count and P&L statistics for this bot?")) return;
+    if (!confirm("Are you sure you want to reset trade count and P&L statistics for this bot?"))
+      return;
     await fnResetStats({ data: { id: botId } });
     toast.success("Statistics reset successfully");
     load();
@@ -243,15 +264,35 @@ function BotsPage() {
   const runOneTick = async (bot: BotRow) => {
     const ts = Date.now();
     try {
+      if (bot.market_mode === "mt5") {
+        const ws = getDerivWS();
+        let candles: DerivCandle[] | undefined;
+
+        // For Deriv synthetic symbols mirrored in MT5, use Deriv dashboard-style
+        // candles for analysis, then execute the resulting trade through MT5.
+        // If there is no Deriv mapping, the MT5 server function falls back to MT5 rates.
+        const analysisSymbol = getAnalysisSymbol(bot);
+        if (ws && analysisSymbol !== bot.symbol) {
+          candles = await ws.fetchCandles(analysisSymbol, 60, 220);
+        }
+
+        const result = (await fnMt5Tick({ data: { id: bot.id, candles } })) as any;
+        if (!result?.ok && result?.error) throw new Error(result.error);
+
+        await refreshBotState(bot.id);
+        await load();
+        return;
+      }
+
       const ws = getDerivWS();
       if (!ws) throw new Error("Live market data is unavailable");
-      const candles = await ws.fetchCandles(bot.symbol, 60, 220);
+      const candles = await ws.fetchCandles(getAnalysisSymbol(bot), 60, 220);
 
       const isDerivLive = bot.market_mode !== "simulated";
 
       if (isDerivLive) {
         // For Deriv demo/real: get OB+FVG decision from server, then execute via Deriv WS in browser
-        const analysis = await fnAnalyzeDecision({ data: { id: bot.id, candles } }) as any;
+        const analysis = (await fnAnalyzeDecision({ data: { id: bot.id, candles } })) as any;
         if (!analysis.ok || !analysis.decision) throw new Error("Analysis failed");
 
         const decision = analysis.decision;
@@ -306,14 +347,26 @@ function BotsPage() {
         });
 
         addLog(bot.id, {
-          timestamp: ts, action: "ENTRY", symbol: bot.symbol,
-          direction: decision.direction, confidence: decision.confidence,
-          entryPrice: decision.entryPrice, stake, stopLoss: decision.stopLoss, takeProfit: decision.takeProfit,
-          duration: `${duration}${duration_unit}`, pnl: null,
+          timestamp: ts,
+          action: "ENTRY",
+          symbol: bot.symbol,
+          direction: decision.direction,
+          confidence: decision.confidence,
+          entryPrice: decision.entryPrice,
+          stake,
+          stopLoss: decision.stopLoss,
+          takeProfit: decision.takeProfit,
+          duration: `${duration}${duration_unit}`,
+          pnl: null,
           reasoning: `LIVE DERIV ${bot.account_type.toUpperCase()} — ${decision.reasoning}`,
-          obZone: decision.obZone, fvgZone: decision.fvgZone, riskCheck: `Contract ${contractId}`,
-          trend: decision.analysis.trend, ema20: decision.analysis.ema20,
-          ema50: decision.analysis.ema50, rsi14: decision.analysis.rsi14, atr14: decision.analysis.atr14,
+          obZone: decision.obZone,
+          fvgZone: decision.fvgZone,
+          riskCheck: `Contract ${contractId}`,
+          trend: decision.analysis.trend,
+          ema20: decision.analysis.ema20,
+          ema50: decision.analysis.ema50,
+          rsi14: decision.analysis.rsi14,
+          atr14: decision.analysis.atr14,
         });
 
         // Subscribe to contract result
@@ -322,15 +375,29 @@ function BotsPage() {
           if (!c) return;
           if (c.is_sold || c.status === "sold" || c.status === "won" || c.status === "lost") {
             const pnl = Number(c.profit ?? 0);
-            const outcome: "win" | "loss" | "breakeven" = pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven";
+            const outcome: "win" | "loss" | "breakeven" =
+              pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven";
             addLog(bot.id, {
-              timestamp: Date.now(), action: "EXIT", symbol: bot.symbol,
-              direction: decision.direction, confidence: decision.confidence,
-              entryPrice: decision.entryPrice, stake, stopLoss: null, takeProfit: null,
-              duration: null, pnl,
+              timestamp: Date.now(),
+              action: "EXIT",
+              symbol: bot.symbol,
+              direction: decision.direction,
+              confidence: decision.confidence,
+              entryPrice: decision.entryPrice,
+              stake,
+              stopLoss: null,
+              takeProfit: null,
+              duration: null,
+              pnl,
               reasoning: `LIVE DERIV ${outcome.toUpperCase()} — P&L ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
-              obZone: null, fvgZone: null, riskCheck: `Contract ${contractId} settled`,
-              trend: null, ema20: null, ema50: null, rsi14: null, atr14: null,
+              obZone: null,
+              fvgZone: null,
+              riskCheck: `Contract ${contractId} settled`,
+              trend: null,
+              ema20: null,
+              ema50: null,
+              rsi14: null,
+              atr14: null,
             });
             await refreshBotState(bot.id);
             await load();
@@ -345,13 +412,26 @@ function BotsPage() {
       await load();
     } catch (e: any) {
       addLog(bot.id, {
-        timestamp: ts, action: "ERROR", symbol: bot.symbol,
-        direction: "—", confidence: 0,
-        entryPrice: null, stake: null, stopLoss: null, takeProfit: null,
-        duration: null, pnl: null,
+        timestamp: ts,
+        action: "ERROR",
+        symbol: bot.symbol,
+        direction: "—",
+        confidence: 0,
+        entryPrice: null,
+        stake: null,
+        stopLoss: null,
+        takeProfit: null,
+        duration: null,
+        pnl: null,
         reasoning: e?.message || "Server bot loop failed",
-        obZone: null, fvgZone: null, riskCheck: "Server loop error",
-        trend: null, ema20: null, ema50: null, rsi14: null, atr14: null,
+        obZone: null,
+        fvgZone: null,
+        riskCheck: "Server loop error",
+        trend: null,
+        ema20: null,
+        ema50: null,
+        rsi14: null,
+        atr14: null,
       });
     }
   };
@@ -381,7 +461,9 @@ function BotsPage() {
   const onCreate = async () => {
     const isSimulated = form.account_type === "simulated";
     if (form.account_type === "real") {
-      const ok = confirm("Start an autonomous bot trading REAL money? This will place live trades.");
+      const ok = confirm(
+        "Start an autonomous bot trading REAL money? This will place live trades.",
+      );
       if (!ok) return;
     }
     const row = (await fnStart({
@@ -467,7 +549,8 @@ function BotsPage() {
         <header>
           <h1 className="text-2xl font-semibold tracking-tight">Autonomous Bots</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Each bot uses the same OB+FVG engine as backtesting, persists its activity, and can be processed by the hosted server loop after deployment.
+            Each bot uses the same OB+FVG engine as backtesting, persists its activity, and can be
+            processed by the hosted server loop after deployment.
           </p>
         </header>
 
@@ -541,9 +624,7 @@ function BotsPage() {
                 step="0.5"
                 min={0.35}
                 value={form.max_stake_per_trade}
-                onChange={(e) =>
-                  setForm({ ...form, max_stake_per_trade: Number(e.target.value) })
-                }
+                onChange={(e) => setForm({ ...form, max_stake_per_trade: Number(e.target.value) })}
               />
             </div>
             <div>
@@ -553,9 +634,7 @@ function BotsPage() {
                 step="0.1"
                 min={0.35}
                 value={form.min_stake_per_trade}
-                onChange={(e) =>
-                  setForm({ ...form, min_stake_per_trade: Number(e.target.value) })
-                }
+                onChange={(e) => setForm({ ...form, min_stake_per_trade: Number(e.target.value) })}
               />
             </div>
             <div>
@@ -563,7 +642,9 @@ function BotsPage() {
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.strategy_mode}
-                onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as "qwen" | "ob-fvg" })}
+                onChange={(e) =>
+                  setForm({ ...form, strategy_mode: e.target.value as "qwen" | "ob-fvg" })
+                }
               >
                 <option value="qwen">Qwen AI (with memory)</option>
                 <option value="ob-fvg">OB+FVG Strategy Only</option>
@@ -581,12 +662,13 @@ function BotsPage() {
             const stats = getBotStats(b);
             const isExpanded = expandedBots.has(b.id);
             const logs = activityLogs.get(b.id) ?? [];
-              const lockedStake = Number(b.locked_stake ?? 0);
-              const floatingPnl = Number(b.floating_pnl ?? 0);
-              const availableBalance = (b.account_balance ?? 1000) + Number(b.total_pnl ?? 0) - lockedStake;
-              const equity = availableBalance + lockedStake + floatingPnl;
+            const lockedStake = Number(b.locked_stake ?? 0);
+            const floatingPnl = Number(b.floating_pnl ?? 0);
+            const availableBalance =
+              (b.account_balance ?? 1000) + Number(b.total_pnl ?? 0) - lockedStake;
+            const equity = availableBalance + lockedStake + floatingPnl;
             const isSimulated = b.market_mode === "simulated";
-              const positions = openPositions.get(b.id) ?? [];
+            const positions = openPositions.get(b.id) ?? [];
 
             return (
               <div key={b.id} className="glass rounded-xl overflow-hidden">
@@ -635,8 +717,14 @@ function BotsPage() {
                         <MiniStat
                           icon={<BarChart3 className="size-3" />}
                           label="Win Rate"
-                          value={(Number(b.wins ?? 0) + Number(b.losses ?? 0)) > 0 ? `${((Number(b.wins ?? 0) / (Number(b.wins ?? 0) + Number(b.losses ?? 0))) * 100).toFixed(0)}%` : "—"}
-                          tone={stats.winRate >= 50 ? "bull" : stats.winRate > 0 ? "bear" : undefined}
+                          value={
+                            Number(b.wins ?? 0) + Number(b.losses ?? 0) > 0
+                              ? `${((Number(b.wins ?? 0) / (Number(b.wins ?? 0) + Number(b.losses ?? 0))) * 100).toFixed(0)}%`
+                              : "—"
+                          }
+                          tone={
+                            stats.winRate >= 50 ? "bull" : stats.winRate > 0 ? "bear" : undefined
+                          }
                         />
                         <MiniStat
                           icon={<TrendingDown className="size-3" />}
@@ -666,18 +754,38 @@ function BotsPage() {
                       {positions.length > 0 && (
                         <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
                           <div className="mb-2 flex items-center justify-between text-xs">
-                            <span className="font-semibold text-primary">Open simulated broker contract</span>
-                            <span className="numeric text-muted-foreground">Locked ${lockedStake.toFixed(2)}</span>
+                            <span className="font-semibold text-primary">
+                              Open simulated broker contract
+                            </span>
+                            <span className="numeric text-muted-foreground">
+                              Locked ${lockedStake.toFixed(2)}
+                            </span>
                           </div>
                           <div className="space-y-1">
                             {positions.map((p) => (
-                              <div key={p.id} className="grid grid-cols-2 gap-2 text-[11px] md:grid-cols-6">
-                                <span className={p.direction === "CALL" ? "text-bull" : "text-bear"}>{p.direction}</span>
+                              <div
+                                key={p.id}
+                                className="grid grid-cols-2 gap-2 text-[11px] md:grid-cols-6"
+                              >
+                                <span
+                                  className={p.direction === "CALL" ? "text-bull" : "text-bear"}
+                                >
+                                  {p.direction}
+                                </span>
                                 <span className="numeric">Stake ${p.stake.toFixed(2)}</span>
                                 <span className="numeric">Entry {p.entry_price.toFixed(4)}</span>
-                                <span className="numeric">Now {p.current_price?.toFixed(4) ?? "—"}</span>
-                                <span className="numeric">TP {p.take_profit?.toFixed(4) ?? "—"}</span>
-                                <span className={`numeric font-semibold ${p.floating_pnl >= 0 ? "text-bull" : "text-bear"}`}>{p.floating_pnl >= 0 ? "+" : ""}{p.floating_pnl.toFixed(2)}</span>
+                                <span className="numeric">
+                                  Now {p.current_price?.toFixed(4) ?? "—"}
+                                </span>
+                                <span className="numeric">
+                                  TP {p.take_profit?.toFixed(4) ?? "—"}
+                                </span>
+                                <span
+                                  className={`numeric font-semibold ${p.floating_pnl >= 0 ? "text-bull" : "text-bear"}`}
+                                >
+                                  {p.floating_pnl >= 0 ? "+" : ""}
+                                  {p.floating_pnl.toFixed(2)}
+                                </span>
                               </div>
                             ))}
                           </div>
@@ -689,11 +797,21 @@ function BotsPage() {
                     <div className="flex flex-col gap-2 items-end shrink-0">
                       <div className="flex items-center gap-1.5">
                         {b.status === "running" && (
-                          <Button size="sm" variant="destructive" onClick={() => onStop(b.id)} className="gap-1.5 h-8">
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => onStop(b.id)}
+                            className="gap-1.5 h-8"
+                          >
                             <Square className="size-3.5" /> Stop Bot
                           </Button>
                         )}
-                        <Button size="sm" variant="outline" className="h-8 text-xs gap-1" onClick={() => handleResetStats(b.id)}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-xs gap-1"
+                          onClick={() => handleResetStats(b.id)}
+                        >
                           <RefreshCw className="size-3" /> Reset Stats
                         </Button>
                       </div>
@@ -709,10 +827,20 @@ function BotsPage() {
                             onChange={(e) => setNewBalance(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && onUpdateBalance(b.id)}
                           />
-                          <Button size="sm" variant="outline" className="h-7 text-xs px-2" onClick={() => onUpdateBalance(b.id)}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs px-2"
+                            onClick={() => onUpdateBalance(b.id)}
+                          >
                             Save
                           </Button>
-                          <Button size="sm" variant="ghost" className="h-7 text-xs px-2" onClick={() => setEditingBalance(null)}>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-xs px-2"
+                            onClick={() => setEditingBalance(null)}
+                          >
                             ✕
                           </Button>
                         </div>
@@ -767,7 +895,8 @@ function BotsPage() {
                     <div className="p-3 bg-card/30">
                       <div className="flex items-center justify-between mb-2">
                         <h4 className="text-xs font-semibold flex items-center gap-1.5">
-                          <Terminal className="size-3 text-primary" /> Live Activity Feed (Calibrated Setup Classification)
+                          <Terminal className="size-3 text-primary" /> Live Activity Feed
+                          (Calibrated Setup Classification)
                         </h4>
                         <span className="text-[10px] text-muted-foreground">
                           {logs.length} stored entries
@@ -805,7 +934,9 @@ function BotsPage() {
             <div className="flex items-center gap-2">
               <ExternalLink className="size-4 text-primary" />
               <h2 className="text-sm font-semibold">MT5 Direct & Deriv Bot Demo</h2>
-              <Badge variant="default" className="text-[10px]">NEW</Badge>
+              <Badge variant="default" className="text-[10px]">
+                NEW
+              </Badge>
             </div>
             {showMt5Guide ? (
               <ChevronUp className="size-4 text-muted-foreground" />
@@ -822,14 +953,14 @@ function BotsPage() {
                 <div className="space-y-1">
                   <p className="text-sm font-semibold">Try the new MT5 Direct Page</p>
                   <p className="text-xs text-muted-foreground">
-                    Connect directly to MetaTrader 5 from within the app — place orders, view positions,
-                    and manage your MT5 account. No Python bridge needed.
+                    Connect directly to MetaTrader 5 from within the app — place orders, view
+                    positions, and manage your MT5 account. No Python bridge needed.
                   </p>
                   <Button
                     size="sm"
                     variant="default"
                     className="mt-2 gap-1"
-                    onClick={() => window.location.href = "/mt5-direct"}
+                    onClick={() => (window.location.href = "/mt5-direct")}
                   >
                     <ExternalLink className="size-3.5" /> Open MT5 Direct
                   </Button>
@@ -839,36 +970,75 @@ function BotsPage() {
               {/* Step 1 — Get Credentials */}
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold flex items-center gap-2">
-                  <span className="size-5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center justify-center">1</span>
+                  <span className="size-5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center justify-center">
+                    1
+                  </span>
                   Get MT5 Credentials from Deriv
                 </h3>
                 <div className="ml-7 text-xs text-muted-foreground space-y-1.5 leading-relaxed">
-                  <p>1. Log into <a href="https://app.deriv.com" target="_blank" rel="noopener noreferrer" className="text-primary underline">app.deriv.com</a></p>
-                  <p>2. Go to <strong>Trader's Hub</strong> → under "CFDs"</p>
-                  <p>3. Click <strong>"Get"</strong> next to a demo MT5 account (Synthetic Indices or Financial)</p>
-                  <p>4. Note your <strong>Login ID</strong>, <strong>Password</strong>, and <strong>Server</strong></p>
-                  <p>5. Add them to <code className="bg-card px-1 rounded">.env</code> as <code className="bg-card px-1 rounded">MT5_ACCOUNT_LOGIN</code>, <code className="bg-card px-1 rounded">MT5_ACCOUNT_PASSWORD</code>, <code className="bg-card px-1 rounded">MT5_ACCOUNT_SERVER</code></p>
+                  <p>
+                    1. Log into{" "}
+                    <a
+                      href="https://app.deriv.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      app.deriv.com
+                    </a>
+                  </p>
+                  <p>
+                    2. Go to <strong>Trader's Hub</strong> → under "CFDs"
+                  </p>
+                  <p>
+                    3. Click <strong>"Get"</strong> next to a demo MT5 account (Synthetic Indices or
+                    Financial)
+                  </p>
+                  <p>
+                    4. Note your <strong>Login ID</strong>, <strong>Password</strong>, and{" "}
+                    <strong>Server</strong>
+                  </p>
+                  <p>
+                    5. Add them to <code className="bg-card px-1 rounded">.env</code> as{" "}
+                    <code className="bg-card px-1 rounded">MT5_ACCOUNT_LOGIN</code>,{" "}
+                    <code className="bg-card px-1 rounded">MT5_ACCOUNT_PASSWORD</code>,{" "}
+                    <code className="bg-card px-1 rounded">MT5_ACCOUNT_SERVER</code>
+                  </p>
                 </div>
               </div>
 
               {/* Step 2 — Node SDK (Primary) */}
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold flex items-center gap-2">
-                  <span className="size-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold flex items-center justify-center">2</span>
-                  Connect via Python FastAPI bridge <Badge variant="default" className="text-[10px]">Primary</Badge>
+                  <span className="size-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold flex items-center justify-center">
+                    2
+                  </span>
+                  Connect via Python FastAPI bridge{" "}
+                  <Badge variant="default" className="text-[10px]">
+                    Primary
+                  </Badge>
                 </h3>
                 <div className="ml-7 text-xs text-muted-foreground space-y-1.5 leading-relaxed">
-                  <p>The MT5 connection is now handled by a Python FastAPI bridge service.
-                  Configure credentials in <code className="bg-card px-1 rounded">.env</code> and deploy the bridge,
-                  then point <code className="bg-card px-1 rounded">VITE_MT5_BRIDGE_URL</code> to the service.</p>
+                  <p>
+                    The MT5 connection is now handled by a Python FastAPI bridge service. Configure
+                    credentials in <code className="bg-card px-1 rounded">.env</code> and deploy the
+                    bridge, then point{" "}
+                    <code className="bg-card px-1 rounded">VITE_MT5_BRIDGE_URL</code> to the
+                    service.
+                  </p>
                 </div>
               </div>
 
               {/* Step 3 — Python Bridge (Fallback) */}
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold flex items-center gap-2">
-                  <span className="size-5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-bold flex items-center justify-center">3</span>
-                  Python Bridge Fallback <Badge variant="outline" className="text-[10px]">Fallback</Badge>
+                  <span className="size-5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-bold flex items-center justify-center">
+                    3
+                  </span>
+                  Python Bridge Fallback{" "}
+                  <Badge variant="outline" className="text-[10px]">
+                    Fallback
+                  </Badge>
                 </h3>
                 <div className="ml-7">
                   <div className="bg-card rounded-lg p-3 border border-border text-xs font-mono overflow-x-auto">
@@ -901,7 +1071,8 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8765)`}</pre>
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Set <code className="bg-card px-1 rounded">MT5_LIB_MODE=python-bridge</code> in .env to use this path.
+                    Set <code className="bg-card px-1 rounded">MT5_LIB_MODE=python-bridge</code> in
+                    .env to use this path.
                   </p>
                 </div>
               </div>
@@ -909,7 +1080,9 @@ if __name__ == "__main__":
               {/* Architecture flow */}
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold flex items-center gap-2">
-                  <span className="size-5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center justify-center">4</span>
+                  <span className="size-5 rounded-full bg-primary/20 text-primary text-[10px] font-bold flex items-center justify-center">
+                    4
+                  </span>
                   Trading Architecture
                 </h3>
                 <div className="ml-7 text-xs text-muted-foreground space-y-1.5 leading-relaxed">
@@ -918,14 +1091,19 @@ if __name__ == "__main__":
                       Bot Decision → AI Analysis → MT5 Direct API → MT5 Broker Server
                     </p>
                   </div>
-                  <p>These bots use <strong>Deriv's WebSocket API</strong> for synthetic indices (R_10, R_25, etc.). 
-                  The <strong>MT5 Direct</strong> page provides parallel access to MT5 accounts for CFDs & forex trading.</p>
+                  <p>
+                    These bots use <strong>Deriv's WebSocket API</strong> for synthetic indices
+                    (R_10, R_25, etc.). The <strong>MT5 Direct</strong> page provides parallel
+                    access to MT5 accounts for CFDs & forex trading.
+                  </p>
                   <div className="flex items-start gap-2 bg-primary/5 border border-primary/20 rounded-lg p-3 mt-2">
                     <Info className="size-4 text-primary shrink-0 mt-0.5" />
                     <p className="text-xs text-muted-foreground leading-relaxed">
-                      <strong className="text-foreground">Demo Mode:</strong> When the account type is set to 
-                      <strong> "Local Simulated"</strong>, trades are executed in-memory without real money. 
-                      Use this to test strategies before switching to Deriv demo or real accounts.
+                      <strong className="text-foreground">Demo Mode:</strong> When the account type
+                      is set to
+                      <strong> "Local Simulated"</strong>, trades are executed in-memory without
+                      real money. Use this to test strategies before switching to Deriv demo or real
+                      accounts.
                     </p>
                   </div>
                 </div>
@@ -975,9 +1153,10 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
     SCAN: "bg-blue-500/15 text-blue-400 border-blue-500/30",
     SKIP: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
     ENTRY: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
-    EXIT: entry.pnl && entry.pnl > 0
-      ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-      : "bg-red-500/15 text-red-400 border-red-500/30",
+    EXIT:
+      entry.pnl && entry.pnl > 0
+        ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+        : "bg-red-500/15 text-red-400 border-red-500/30",
     ERROR: "bg-red-500/15 text-red-400 border-red-500/30",
     PROTECTION: "bg-purple-500/15 text-purple-400 border-purple-500/30",
   };
@@ -997,16 +1176,24 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
       >
         {/* Time */}
         <span className="text-muted-foreground numeric w-16 text-left shrink-0">
-          {new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          {new Date(entry.timestamp).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          })}
         </span>
 
         {/* Action badge */}
-        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${actionColors[entry.action] ?? ""} w-20 text-center shrink-0`}>
+        <span
+          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${actionColors[entry.action] ?? ""} w-20 text-center shrink-0`}
+        >
           {entry.action}
         </span>
 
         {/* Direction */}
-        <span className={`font-semibold w-10 text-left shrink-0 ${directionColors[entry.direction] ?? ""}`}>
+        <span
+          className={`font-semibold w-10 text-left shrink-0 ${directionColors[entry.direction] ?? ""}`}
+        >
           {entry.direction}
         </span>
 
@@ -1021,9 +1208,11 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
         </span>
 
         {/* P&L */}
-        <span className={`numeric w-14 text-left shrink-0 font-semibold ${
-          entry.pnl != null ? (entry.pnl >= 0 ? "text-bull" : "text-bear") : ""
-        }`}>
+        <span
+          className={`numeric w-14 text-left shrink-0 font-semibold ${
+            entry.pnl != null ? (entry.pnl >= 0 ? "text-bull" : "text-bear") : ""
+          }`}
+        >
           {entry.pnl != null ? `${entry.pnl >= 0 ? "+" : ""}${entry.pnl.toFixed(2)}` : "—"}
         </span>
 
@@ -1061,7 +1250,9 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
             </div>
           </div>
           <div className="mt-2 pt-2 border-t border-border/30">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">AI Reasoning</p>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              AI Reasoning
+            </p>
             <p className="text-xs text-foreground/80 leading-relaxed">{entry.reasoning}</p>
           </div>
         </div>

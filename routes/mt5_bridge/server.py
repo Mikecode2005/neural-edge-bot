@@ -1,13 +1,31 @@
-to"""MT5 Bridge — FastAPI server that wraps the native MetaTrader5 Python package.
+"""MT5 Bridge — Refactored FastAPI server using the Execution Engine.
 
-This bridge provides a REST API for MT5 trading operations. It requires the MT5
-terminal installed on Windows (MetaTrader5 Python package dependency).
+This bridge provides a REST API for MT5 trading operations. It uses the
+MT5ExecutionEngine which handles all broker-specific details automatically.
+
+Architecture:
+    Frontend → FastAPI → ExecutionEngine → MT5
+
+The AI/frontend only needs to specify:
+    - symbol
+    - side (buy/sell)
+    - volume
+    - sl (optional)
+    - tp (optional)
+
+The execution engine handles:
+    - symbol validation
+    - price selection (BUY=ask, SELL=bid)
+    - stop validation & adjustment
+    - filling mode detection
+    - volume normalization
+    - order checking
+    - retries
+    - broker compatibility
 
 Usage:
     python -m routes.mt5_bridge.server
     uvicorn routes.mt5_bridge.server:app --host 0.0.0.0 --port 8765
-
-For Render deployment, point MT5_BRIDGE_URL in the frontend to the Render service URL.
 """
 from __future__ import annotations
 
@@ -15,7 +33,7 @@ import asyncio
 import logging
 import os
 import sys
-from typing import Any, Optional, Union
+from typing import Any, Optional
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -30,7 +48,7 @@ load_dotenv(env_path)
 
 log = logging.getLogger("uvicorn.error")
 
-app = FastAPI(title="MT5 Bridge", version="1.0.0", docs_url="/docs")
+app = FastAPI(title="MT5 Bridge (Refactored)", version="2.0.0", docs_url="/docs")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,59 +57,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global MT5 state
-_mt5_initialized = False
-_mt5_login = 0
-_mt5_server = ""
-_tunnel_url: Optional[str] = None
+# Global engine instance (lazy-initialized via /initialize)
+_engine: Optional[Any] = None
 
-# Simple in-memory bot registry for lightweight automation/control from frontend
+# Simple in-memory bot registry
 _mt5_bots: dict = {}
 
 
-
-
-# ── Pydantic models ──
-
-class Credentials(BaseModel):
-    login: int
-    password: str
-    server: str
-
-
-class OrderRequest(BaseModel):
-    symbol: str
-    type: str  # "buy" | "sell"
-    volume: float
-    price: Optional[float] = 0.0
-    sl: Optional[float] = 0.0
-    tp: Optional[float] = 0.0
-    comment: Optional[str] = ""
-    magic: Optional[int] = 0
-    deviation: Optional[int] = 20
-    type_filling: Optional[Union[str, int]] = Field("ioc", alias="typeFilling")
-
-    class Config:
-        allow_population_by_field_name = True
-
-
-class CloseRequest(BaseModel):
-    ticket: int
-
-
-class RatesRequest(BaseModel):
-    symbol: str
-    timeframe: str  # "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d"
-    count: int = 100
-
-
-class SymbolRequest(BaseModel):
-    symbol: str
-
-
-# ── MT5 wrapper (lazy import so the module loads without MT5 installed) ──
+# ── Internal helpers ──
 
 def _import_mt5():
+    """Lazy-import MetaTrader5 so the module loads without MT5 installed."""
     try:
         import MetaTrader5 as mt5
         return mt5
@@ -101,6 +77,14 @@ def _import_mt5():
             detail="MetaTrader5 Python package is not installed. Run: pip install MetaTrader5. "
                    "This package requires the MT5 terminal to be installed on Windows.",
         )
+
+
+def _get_engine():
+    """Get the global execution engine, raising if not initialized."""
+    global _engine
+    if _engine is None:
+        raise HTTPException(status_code=400, detail="MT5 not initialized. Call /initialize first.")
+    return _engine
 
 
 def _tf_to_mt5(timeframe: str) -> Any:
@@ -120,57 +104,8 @@ def _tf_to_mt5(timeframe: str) -> Any:
     return tf
 
 
-def _order_type_to_mt5(type_str: str) -> int:
-    mt5 = _import_mt5()
-    return mt5.ORDER_TYPE_BUY if type_str == "buy" else mt5.ORDER_TYPE_SELL
-
-
-def _mt5_account_to_dict(account_info: Any) -> dict:
-    return {
-        "login": account_info.login,
-        "balance": account_info.balance,
-        "equity": account_info.equity,
-        "margin": account_info.margin,
-        "marginFree": account_info.margin_free,
-        "marginLevel": account_info.margin_level,
-        "currency": account_info.currency,
-        "server": account_info.server,
-        "name": account_info.name,
-        "company": account_info.company,
-        "leverage": account_info.leverage,
-    }
-
-
-def _mt5_position_to_dict(pos: Any) -> dict:
-    return {
-        "ticket": pos.ticket,
-        "symbol": pos.symbol,
-        "type": "buy" if pos.type == 0 else "sell",
-        "volume": pos.volume,
-        "priceOpen": pos.price_open,
-        "priceCurrent": pos.price_current,
-        "sl": pos.sl,
-        "tp": pos.tp,
-        "profit": pos.profit,
-        "swap": pos.swap,
-        "comment": pos.comment,
-        "magic": pos.magic,
-        "time": int(pos.time),
-    }
-
-
-def _mt5_order_result_to_dict(result: Any) -> dict:
-    return {
-        "retcode": result.retcode,
-        "ticket": result.order if hasattr(result, "order") else getattr(result, "ticket", 0),
-        "volume": result.volume,
-        "price": result.price,
-        "comment": result.comment,
-    }
-
-
 def _mt5_rate_to_dict(rate: Any) -> dict:
-    # Support numpy.void records and objects with attributes
+    """Convert an MT5 rate to a dict (numpy-safe)."""
     def _get(field: str):
         if hasattr(rate, field):
             return getattr(rate, field)
@@ -178,7 +113,6 @@ def _mt5_rate_to_dict(rate: Any) -> dict:
             return rate[field]
         except Exception:
             try:
-                # numpy structured array may expose fields via names
                 names = getattr(rate.dtype, "names", None)
                 if names and field in names:
                     return rate[field]
@@ -187,14 +121,11 @@ def _mt5_rate_to_dict(rate: Any) -> dict:
         return None
 
     def _to_native(val: Any) -> Any:
-        """Convert numpy scalars to native Python types for JSON serialization."""
         if val is None:
             return 0
         try:
-            # Handle numpy integer types (int64, uint64, etc.)
             if hasattr(val, "item"):
                 return val.item()
-            # Handle numpy floats
             return float(val)
         except Exception:
             return val
@@ -212,282 +143,284 @@ def _mt5_rate_to_dict(rate: Any) -> dict:
     }
 
 
-def _mt5_symbol_to_dict(info: Any) -> dict:
-    trade_mode_map = {0: "disabled", 1: "enabled", 2: "closeonly", 3: "longonly", 4: "shortonly"}
-    return {
-        "symbol": info.name,
-        "digits": info.digits,
-        "point": info.point,
-        "spread": info.spread,
-        "bid": info.bid,
-        "ask": info.ask,
-        "volumeMin": info.volume_min,
-        "volumeMax": info.volume_max,
-        "volumeStep": info.volume_step,
-        "tradeMode": trade_mode_map.get(info.trade_mode, "unknown"),
-        "description": info.description,
-        "path": info.path,
-        "marginInitial": info.margin_initial,
-        "marginMaintenance": info.margin_maintenance,
-    }
+# ── Pydantic models ──
 
+class Credentials(BaseModel):
+    login: int
+    password: str
+    server: str
+
+
+class OrderRequest(BaseModel):
+    """Simple order request from the AI/frontend.
+
+    The AI only needs to specify:
+    - symbol
+    - type (buy/sell)
+    - volume
+    - sl (optional)
+    - tp (optional)
+
+    The execution engine handles all MT5-specific details.
+    """
+    symbol: str
+    type: str  # "buy" | "sell"
+    volume: float
+    sl: Optional[float] = 0.0
+    tp: Optional[float] = 0.0
+    comment: Optional[str] = ""
+    magic: Optional[int] = 0
+    deviation: Optional[int] = 20
+
+
+class CloseRequest(BaseModel):
+    ticket: int
+
+
+class ClosePartialRequest(BaseModel):
+    ticket: int
+    volume: float
+
+
+class ModifyRequest(BaseModel):
+    ticket: int
+    sl: Optional[float] = 0.0
+    tp: Optional[float] = 0.0
+
+
+class RatesRequest(BaseModel):
+    symbol: str
+    timeframe: str  # "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d"
+    count: int = 100
+
+
+class SymbolRequest(BaseModel):
+    symbol: str
+
+
+class ValidateRequest(BaseModel):
+    symbol: str
+    type: str  # "buy" | "sell"
+    volume: float
+    sl: Optional[float] = 0.0
+    tp: Optional[float] = 0.0
+
+
+# ── Health & Status ──
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "mt5_initialized": _mt5_initialized, "login": _mt5_login, "server": _mt5_server}
+    connected = _engine is not None and _engine.is_connected()
+    return {"status": "ok", "mt5_initialized": connected}
 
 
 @app.get("/status")
 async def status():
-    if not _mt5_initialized:
-        return {"connected": False, "error": "Not initialized"}
-    mt5 = _import_mt5()
-    info = mt5.account_info()
-    if info is None:
+    engine = _get_engine()
+    account = engine.get_account()
+    if account is None:
         return {"connected": False, "error": "Terminal disconnected"}
-    return {"connected": True, "account": _mt5_account_to_dict(info)}
+    return {"connected": True, "account": account}
 
+
+# ── Initialization ──
 
 @app.post("/initialize")
 async def initialize(creds: Optional[Credentials] = None):
-    global _mt5_initialized, _mt5_login, _mt5_server
+    global _engine
 
     mt5 = _import_mt5()
 
-    if _mt5_initialized:
-        mt5.shutdown()
-        _mt5_initialized = False
-
-    initialized = mt5.initialize()
-    if not initialized:
-        error = mt5.last_error()
-        raise HTTPException(
-            status_code=500,
-            detail=f"MT5 initialize() failed: {error or 'Unknown error'}. Ensure MT5 terminal is installed and not already running."
-        )
-
-    _mt5_initialized = True
+    # Import and create engine
+    from .execution_engine import MT5ExecutionEngine
+    _engine = MT5ExecutionEngine(mt5)
 
     if creds:
-        authorized = mt5.login(creds.login, password=creds.password, server=creds.server)
-        if not authorized:
-            error = mt5.last_error()
-            mt5.shutdown()
-            _mt5_initialized = False
-            raise HTTPException(
-                status_code=401,
-                detail=f"MT5 login failed for {creds.login}@{creds.server}: {error or 'Invalid credentials'}"
-            )
-        _mt5_login = creds.login
-        _mt5_server = creds.server
+        result = _engine.connect(creds.login, creds.password, creds.server)
+        if not result["success"]:
+            _engine = None
+            raise HTTPException(status_code=401, detail=result.get("error", "Login failed"))
         log.info(f"MT5 initialized and logged in as {creds.login}@{creds.server}")
+        return {"status": "ok", "login": creds.login, "server": creds.server}
     else:
-        _mt5_login = 0
-        _mt5_server = ""
-        log.info("MT5 initialized (no login credentials provided)")
-
-    return {"status": "ok", "login": _mt5_login, "server": _mt5_server}
+        result = _engine.connect()
+        if not result["success"]:
+            _engine = None
+            raise HTTPException(status_code=500, detail=result.get("error", "Initialize failed"))
+        log.info("MT5 initialized (no login)")
+        return {"status": "ok", "login": 0, "server": ""}
 
 
 @app.post("/shutdown")
 async def shutdown():
-    global _mt5_initialized, _mt5_login, _mt5_server
-    if _mt5_initialized:
-        mt5 = _import_mt5()
-        mt5.shutdown()
-    _mt5_initialized = False
-    _mt5_login = 0
-    _mt5_server = ""
+    global _engine, _mt5_bots
+    if _engine is not None:
+        _engine.disconnect()
+    _engine = None
+    _mt5_bots.clear()
     return {"status": "ok"}
 
 
+# ── Account ──
+
 @app.get("/account-info")
 async def account_info():
-    if not _mt5_initialized:
-        raise HTTPException(status_code=400, detail="MT5 not initialized. Call /initialize first.")
-    mt5 = _import_mt5()
-    info = mt5.account_info()
-    if info is None:
+    engine = _get_engine()
+    account = engine.get_account()
+    if account is None:
         raise HTTPException(status_code=500, detail="Failed to get account info")
-    return _mt5_account_to_dict(info)
+    return account
 
 
-@app.get("/positions")
-async def positions():
-    if not _mt5_initialized:
-        raise HTTPException(status_code=400, detail="MT5 not initialized.")
-    mt5 = _import_mt5()
-    pos_list = mt5.positions_get()
-    if pos_list is None:
-        return []
-    return [_mt5_position_to_dict(p) for p in pos_list]
+# ── Symbols ──
 
+@app.post("/symbol-info")
+async def symbol_info(req: SymbolRequest):
+    engine = _get_engine()
+    info = engine.get_symbol(req.symbol)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"Symbol '{req.symbol}' not found")
+    return info
+
+
+@app.post("/symbol-tick")
+async def symbol_tick(req: SymbolRequest):
+    """Get the latest tick for a symbol."""
+    engine = _get_engine()
+    spec = engine.get_symbol(req.symbol)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Symbol '{req.symbol}' not found")
+    return {
+        "time": int(datetime.now().timestamp()),
+        "bid": spec.get("bid", 0),
+        "ask": spec.get("ask", 0),
+        "last": 0,
+        "volume": 0,
+    }
+
+
+@app.post("/symbol-filling")
+async def symbol_filling(req: SymbolRequest):
+    """Get supported filling modes for a symbol."""
+    engine = _get_engine()
+    modes = engine.get_supported_filling(req.symbol)
+    return {"symbol": req.symbol, "supportedFillingModes": modes}
+
+
+# ── Order Execution ──
 
 @app.post("/order-send")
 async def order_send(req: OrderRequest):
-    if not _mt5_initialized:
-        raise HTTPException(status_code=400, detail="MT5 not initialized.")
-    mt5 = _import_mt5()
-    order_type = _order_type_to_mt5(req.type)
-    
-    # Get symbol info to check allowed filling modes
-    symbol_info = mt5.symbol_info(req.symbol)
-    if symbol_info is None:
-        raise HTTPException(status_code=400, detail=f"Symbol {req.symbol} not found")
-    
-    # Get tick price first since we need it for order_check
-    tick = mt5.symbol_info_tick(req.symbol)
-    if tick is None:
-        raise HTTPException(status_code=400, detail=f"Cannot get tick for {req.symbol}")
-    
-    # Detect the supported filling mode for this symbol
-    def get_supported_filling(volume: float, order_type: int, price: float) -> int:
-        """Try each filling mode with order_check to find one the broker accepts."""
-        for mode in (mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN):
-            test_request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": req.symbol,
-                "volume": volume,
-                "type": order_type,
-                "price": price,
-                "type_filling": mode,
-                "type_time": mt5.ORDER_TIME_GTC,
-            }
-            try:
-                check = mt5.order_check(test_request)
-                if check and check.retcode == 0:
-                    return mode
-            except Exception:
-                continue
-        # Default to FOK as it works with Deriv synthetic indices
-        return mt5.ORDER_FILLING_FOK
+    """Execute a trade order.
 
-    # Determine the price (use provided price or get from tick)
-    price = req.price if req.price and req.price > 0 else 0.0
-    if price == 0.0:
-        price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+    The AI/frontend provides simple parameters. The execution engine handles
+    all MT5-specific details including price selection, stop validation,
+    filling mode detection, and retries.
+    """
+    engine = _get_engine()
 
-    # Find the supported filling mode
-    filling_mode = get_supported_filling(req.volume, order_type, price)
-    
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": req.symbol,
-        "volume": req.volume,
-        "type": order_type,
-        "price": price,
-        "sl": req.sl or 0.0,
-        "tp": req.tp or 0.0,
-        "deviation": req.deviation or 20,
-        "magic": req.magic or 0,
-        "comment": req.comment or "",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": filling_mode,
-    }
-    if not request["price"] or request["price"] == 0.0:
-        tick = mt5.symbol_info_tick(req.symbol)
-        if tick is None:
-            raise HTTPException(status_code=400, detail=f"Cannot get tick for {req.symbol}")
-        request["price"] = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+    from .execution_engine import TradeRequest
 
-    def _try_send(req_body: dict) -> Any:
-        res = mt5.order_send(req_body)
-        if res is None:
-            return None
-        return res
+    trade_req = TradeRequest(
+        symbol=req.symbol,
+        side=req.type,
+        volume=req.volume,
+        sl=req.sl or 0.0,
+        tp=req.tp or 0.0,
+        comment=req.comment or "",
+        magic=req.magic or 0,
+        deviation=req.deviation or 20,
+    )
 
-    result = _try_send(request)
-    if result is None:
-        err = mt5.last_error()
-        raise HTTPException(status_code=500, detail=f"Order send failed: {err}")
+    result = engine.send_order(trade_req)
 
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        # Try all fallback filling modes
-        initial_mode = request["type_filling"]
-        fallback_modes = []
-        if initial_mode != mt5.ORDER_FILLING_FOK:
-            fallback_modes.append(mt5.ORDER_FILLING_FOK)
-        if initial_mode != mt5.ORDER_FILLING_IOC:
-            fallback_modes.append(mt5.ORDER_FILLING_IOC)
-        if initial_mode != mt5.ORDER_FILLING_RETURN:
-            fallback_modes.append(mt5.ORDER_FILLING_RETURN)
+    if result.success:
+        return result.to_dict()
+    else:
+        # Convert to HTTP exception
+        from .error_codes import retcode_to_http_exception
+        error_info = retcode_to_http_exception(result.retcode, result.message)
+        raise HTTPException(
+            status_code=error_info.get("status_code", 400),
+            detail=error_info.get("detail", result.message),
+        )
 
-        for fallback in fallback_modes:
-            request["type_filling"] = fallback
-            result = _try_send(request)
-            if result is None:
-                continue
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
-                break
 
-        if result is None:
-            err = mt5.last_error()
-            raise HTTPException(status_code=500, detail=f"Order send failed: {err}")
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            # Last chance without explicit type_filling
-            request.pop("type_filling", None)
-            result = _try_send(request)
-            if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
-                return _mt5_order_result_to_dict(result)
-            if result is None:
-                err = mt5.last_error()
-                raise HTTPException(status_code=500, detail=f"Order send failed: {err}")
-            raise HTTPException(status_code=400, detail=f"Order rejected (retcode={result.retcode}): {result.comment}")
+@app.post("/order-validate")
+async def order_validate(req: ValidateRequest):
+    """Validate a trade request without executing it.
 
-    return _mt5_order_result_to_dict(result)
+    Returns detailed information about the trade including valid SL/TP levels.
+    """
+    engine = _get_engine()
+    validation = engine.validate_trade(
+        symbol=req.symbol,
+        side=req.type,
+        volume=req.volume,
+        sl=req.sl or 0.0,
+        tp=req.tp or 0.0,
+    )
+    return validation
+
+
+# ── Positions ──
+
+@app.get("/positions")
+async def positions(symbol: str = ""):
+    engine = _get_engine()
+    return engine.positions(symbol)
 
 
 @app.post("/positions-close")
 async def positions_close(req: CloseRequest):
-    if not _mt5_initialized:
-        raise HTTPException(status_code=400, detail="MT5 not initialized.")
-    mt5 = _import_mt5()
-    pos_list = mt5.positions_get(ticket=req.ticket)
-    if pos_list is None or len(pos_list) == 0:
-        raise HTTPException(status_code=404, detail=f"Position #{req.ticket} not found")
-    position = pos_list[0]
-    tick = mt5.symbol_info_tick(position.symbol)
-    if tick is None:
-        raise HTTPException(status_code=400, detail=f"Cannot get tick for {position.symbol}")
-    close_type = mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY
-    close_price = tick.bid if position.type == 0 else tick.ask
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": position.symbol,
-        "volume": position.volume,
-        "type": close_type,
-        "position": req.ticket,
-        "price": close_price,
-        "deviation": 20,
-        "magic": position.magic,
-        "comment": "Closed by MT5 Bridge",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
-    result = mt5.order_send(request)
-    if result is None:
-        err = mt5.last_error()
-        raise HTTPException(status_code=500, detail=f"Close failed: {err}")
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        raise HTTPException(status_code=400, detail=f"Close rejected (retcode={result.retcode}): {result.comment}")
-    return _mt5_order_result_to_dict(result)
+    engine = _get_engine()
+    result = engine.close_position(req.ticket)
+    if result.success:
+        return result.to_dict()
+    raise HTTPException(
+        status_code=400,
+        detail=f"Close failed (retcode={result.retcode}): {result.message}",
+    )
 
+
+@app.post("/positions-close-partial")
+async def positions_close_partial(req: ClosePartialRequest):
+    engine = _get_engine()
+    result = engine.close_partial(req.ticket, req.volume)
+    if result.success:
+        return result.to_dict()
+    raise HTTPException(
+        status_code=400,
+        detail=f"Partial close failed (retcode={result.retcode}): {result.message}",
+    )
+
+
+@app.post("/positions-modify")
+async def positions_modify(req: ModifyRequest):
+    engine = _get_engine()
+    result = engine.modify_position(req.ticket, req.sl or 0.0, req.tp or 0.0)
+    if result.success:
+        return result.to_dict()
+    raise HTTPException(
+        status_code=400,
+        detail=f"Modify failed (retcode={result.retcode}): {result.message}",
+    )
+
+
+# ── Rates ──
 
 @app.post("/rates")
 async def rates(req: RatesRequest):
-    if not _mt5_initialized:
-        raise HTTPException(status_code=400, detail="MT5 not initialized.")
+    from .execution_engine import TRADE_RETCODE_CODES
+
+    if _engine is None or not _engine.is_connected():
+        raise HTTPException(status_code=400, detail="MT5 not initialized. Call /initialize first.")
+
     mt5 = _import_mt5()
     tf = _tf_to_mt5(req.timeframe)
     try:
         rates_data = mt5.copy_rates_from_pos(req.symbol, tf, 0, req.count)
         log.info(f"rates_data type={type(rates_data)} len={len(rates_data) if rates_data is not None else 'None'}")
-        if rates_data is not None and len(rates_data) > 0:
-            first = rates_data[0]
-            try:
-                log.info(f"first rate type={type(first)} repr={repr(first)[:200]}")
-            except Exception:
-                log.info("first rate repr unavailable")
         if rates_data is None or len(rates_data) == 0:
             return []
         out = []
@@ -506,37 +439,29 @@ async def rates(req: RatesRequest):
         raise HTTPException(status_code=500, detail=f"Rates error: {e}")
 
 
-@app.post("/symbol-info")
-async def symbol_info(req: SymbolRequest):
-    if not _mt5_initialized:
-        raise HTTPException(status_code=400, detail="MT5 not initialized.")
-    mt5 = _import_mt5()
-    info = mt5.symbol_info(req.symbol)
-    if info is None:
-        raise HTTPException(status_code=404, detail=f"Symbol '{req.symbol}' not found")
-    return _mt5_symbol_to_dict(info)
+# ── History ──
+
+@app.get("/history")
+async def history(from_date: int = 0, to_date: int = 0):
+    engine = _get_engine()
+    return engine.history(from_date, to_date)
 
 
-@app.post("/symbol-tick")
-async def symbol_tick(req: SymbolRequest):
-    if not _mt5_initialized:
-        raise HTTPException(status_code=400, detail="MT5 not initialized.")
-    mt5 = _import_mt5()
-    tick = mt5.symbol_info_tick(req.symbol)
-    if tick is None:
-        raise HTTPException(status_code=404, detail=f"Cannot get tick for '{req.symbol}'")
-    return {
-        "time": int(tick.time),
-        "bid": tick.bid,
-        "ask": tick.ask,
-        "last": tick.last,
-        "volume": tick.volume,
-    }
+# ── Orders (pending) ──
+
+@app.get("/orders")
+async def orders():
+    engine = _get_engine()
+    return engine.orders()
 
 
 # ── Tunnel control (ngrok) ──
+
 class TunnelRegister(BaseModel):
     public_url: str
+
+
+_tunnel_url: Optional[str] = None
 
 
 @app.post("/tunnel/register")
@@ -554,9 +479,6 @@ async def tunnel_info():
 
 @app.post("/tunnel/start")
 async def tunnel_start():
-    """Attempt to start an ngrok tunnel automatically using pyngrok if available.
-    If pyngrok is not installed or NGROK_AUTH_TOKEN is not set, return an informative error.
-    """
     global _tunnel_url
     try:
         from pyngrok import ngrok, conf
@@ -588,6 +510,7 @@ async def tunnel_stop():
 
 
 # ── Lightweight bot endpoints (in-memory) ──
+
 class BotStartRequest(BaseModel):
     symbol: str
     timeframe: str = "1m"
@@ -611,16 +534,21 @@ def _create_bot_entry(symbol: str, timeframe: str, interval_seconds: int, enable
 
 
 async def _bot_loop(bot_id: str):
-    global _mt5_bots
-    mt5 = _import_mt5()
+    global _mt5_bots, _engine
     bot = _mt5_bots.get(bot_id)
     if not bot:
         return
     symbol = bot["symbol"]
     tf = bot["timeframe"]
     interval = bot["interval_seconds"]
+
+    # Get engine once
+    if _engine is None:
+        return
+
     while bot["status"] == "running":
         try:
+            mt5 = _import_mt5()
             rates = mt5.copy_rates_from_pos(symbol, _tf_to_mt5(tf), 0, 3)
             if not rates:
                 closes = []
@@ -639,29 +567,33 @@ async def _bot_loop(bot_id: str):
             entry = {"timestamp": ts, "action": decision, "details": details}
             bot["activity"].insert(0, entry)
             bot["last_loop_at"] = datetime.now(timezone.utc).isoformat()
-            # Optionally place a tiny test order if trading enabled (be careful)
-            if bot.get("enable_trading"):
+
+            if bot.get("enable_trading") and _engine is not None:
                 try:
-                    # Place a small market order (0.01 lots) as demo — caller should enable carefully
-                    req = {
-                        "symbol": symbol,
-                        "type": "buy" if decision == "bullish_scan" else "sell",
-                        "volume": 0.01,
-                    }
-                    res = mt5.order_send({
-                        "action": mt5.TRADE_ACTION_DEAL,
-                        "symbol": req["symbol"],
-                        "volume": req["volume"],
-                        "type": mt5.ORDER_TYPE_BUY if req["type"] == "buy" else mt5.ORDER_TYPE_SELL,
-                        "price": 0.0,
-                        "type_time": mt5.ORDER_TIME_GTC,
-                        "type_filling": mt5.ORDER_FILLING_IOC,
+                    from .execution_engine import TradeRequest
+                    trade_req = TradeRequest(
+                        symbol=symbol,
+                        side="buy" if decision == "bullish_scan" else "sell",
+                        volume=0.01,
+                    )
+                    result = _engine.send_order(trade_req)
+                    bot["activity"].insert(0, {
+                        "timestamp": int(datetime.now(timezone.utc).timestamp()),
+                        "action": "order_sent",
+                        "result": result.to_dict(),
                     })
-                    bot["activity"].insert(0, {"timestamp": int(datetime.now(timezone.utc).timestamp()), "action": "order_sent", "result": getattr(res, "retcode", None)})
                 except Exception as e:
-                    bot["activity"].insert(0, {"timestamp": int(datetime.now(timezone.utc).timestamp()), "action": "order_error", "error": str(e)})
+                    bot["activity"].insert(0, {
+                        "timestamp": int(datetime.now(timezone.utc).timestamp()),
+                        "action": "order_error",
+                        "error": str(e),
+                    })
         except Exception as e:
-            bot["activity"].insert(0, {"timestamp": int(datetime.now(timezone.utc).timestamp()), "action": "error", "error": str(e)})
+            bot["activity"].insert(0, {
+                "timestamp": int(datetime.now(timezone.utc).timestamp()),
+                "action": "error",
+                "error": str(e),
+            })
         await asyncio.sleep(interval)
 
 
@@ -670,7 +602,6 @@ async def bot_start(req: BotStartRequest, background: BackgroundTasks):
     global _mt5_bots
     bot = _create_bot_entry(req.symbol, req.timeframe, req.interval_seconds, req.enable_trading)
     _mt5_bots[bot["id"]] = bot
-    # Start background task
     task = asyncio.create_task(_bot_loop(bot["id"]))
     bot["task"] = task
     return {"ok": True, "bot": {k: v for k, v in bot.items() if k != "task"}}
@@ -684,7 +615,6 @@ async def bot_stop(data: dict):
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
     bot["status"] = "stopped"
-    # cancel task if running
     t = bot.get("task")
     if t and not t.done():
         t.cancel()
@@ -693,7 +623,7 @@ async def bot_stop(data: dict):
 
 @app.get("/bot/list")
 async def bot_list():
-    return [ {k: v for k, v in b.items() if k != "task"} for b in _mt5_bots.values() ]
+    return [{k: v for k, v in b.items() if k != "task"} for b in _mt5_bots.values()]
 
 
 @app.get("/bot/activity")
@@ -706,18 +636,11 @@ async def bot_activity(bot_id: str):
 
 @app.get("/bot/open-positions")
 async def bot_open_positions(bot_id: str):
-    # Return current MT5 positions filtered by symbol for the bot
-    if not _mt5_initialized:
-        raise HTTPException(status_code=400, detail="MT5 not initialized")
-    mt5 = _import_mt5()
+    engine = _get_engine()
     bot = _mt5_bots.get(bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
-    pos_list = mt5.positions_get()
-    if pos_list is None:
-        return []
-    filtered = [p for p in pos_list if p.symbol == bot["symbol"]]
-    return [_mt5_position_to_dict(p) for p in filtered]
+    return engine.positions(bot["symbol"])
 
 
 @app.post("/bot/tick")
@@ -726,7 +649,6 @@ async def bot_tick(data: dict):
     bot = _mt5_bots.get(bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
-    # run a single iteration synchronously
     await _bot_loop(bot_id)
     return {"ok": True}
 
@@ -736,5 +658,5 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     port = int(os.getenv("MT5_BRIDGE_PORT", "8765"))
     host = os.getenv("MT5_BRIDGE_HOST", "0.0.0.0")
-    log.info(f"Starting MT5 Bridge on {host}:{port}...")
+    log.info(f"Starting MT5 Bridge v2 on {host}:{port}...")
     uvicorn.run(app, host=host, port=port, log_level="info")

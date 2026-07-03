@@ -1,1 +1,1 @@
-"""MT5 bridge package."""
+"""MT5 Bridge package — broker-aware execution engine for MetaTrader 5."""
