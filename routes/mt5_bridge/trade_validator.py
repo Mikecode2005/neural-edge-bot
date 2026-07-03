@@ -7,6 +7,7 @@ Rejects invalid requests with clear, human-readable error messages.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Optional
 
 from .symbol_manager import SymbolSpec
@@ -123,11 +124,14 @@ class TradeValidator:
     @staticmethod
     def _check_volume_step(spec: SymbolSpec, volume: float) -> ValidationResult:
         if spec.volume_step > 0:
-            # Check volume is a multiple of volume_step
-            remainder = volume % spec.volume_step
-            if remainder > 1e-10:  # floating point tolerance
-                # Round to nearest step
-                normalized = round(volume / spec.volume_step) * spec.volume_step
+            # Check volume is a multiple of volume_step. Do not use plain `%`
+            # because valid decimal lot sizes like 0.5 % 0.01 can produce tiny
+            # floating point remainders and fail validation incorrectly.
+            steps = round(volume / spec.volume_step)
+            normalized = steps * spec.volume_step
+            tolerance = max(1e-9, spec.volume_step * 1e-6)
+            if not math.isclose(volume, normalized, rel_tol=0.0, abs_tol=tolerance):
+                normalized = TradeValidator.normalize_volume(spec, volume)
                 return invalid(
                     f"Volume {volume} does not match volume_step {spec.volume_step} "
                     f"for {spec.name}. Nearest valid volume: {normalized}"
@@ -166,5 +170,9 @@ class TradeValidator:
             normalized = round(volume / spec.volume_step) * spec.volume_step
             # Clamp to min/max
             normalized = max(spec.volume_min, min(spec.volume_max, normalized))
-            return normalized
+            # Round to the precision implied by volume_step to avoid values like
+            # 0.5000000000000001 being sent to MT5 or revalidated incorrectly.
+            step_text = f"{spec.volume_step:.10f}".rstrip("0")
+            decimals = len(step_text.split(".")[1]) if "." in step_text else 0
+            return round(normalized, decimals)
         return max(spec.volume_min, min(spec.volume_max, volume))
