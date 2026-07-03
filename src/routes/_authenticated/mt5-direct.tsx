@@ -110,9 +110,34 @@ const MT5_SYMBOLS = [
   "XAUUSD",
   "BTCUSD",
   "ETHUSD",
+  // Volatility Indices (all have tradeMode=shortonly on Deriv)
   "Volatility 10 Index",
   "Volatility 25 Index",
+  "Volatility 50 Index",
   "Volatility 75 Index",
+  "Volatility 100 Index",
+  "Volatility 5 Index",
+  "Volatility 15 Index",
+  "Volatility 30 Index",
+  "Volatility 90 Index",
+  // 1s Volatility Indices
+  "Volatility 10 (1s) Index",
+  "Volatility 15 (1s) Index",
+  "Volatility 25 (1s) Index",
+  "Volatility 30 (1s) Index",
+  "Volatility 50 (1s) Index",
+  "Volatility 75 (1s) Index",
+  "Volatility 90 (1s) Index",
+  "Volatility 100 (1s) Index",
+  "Volatility 150 (1s) Index",
+  "Volatility 250 (1s) Index",
+  // Other Deriv indices
+  "Crash 150 Index",
+  "Boom 150 Index",
+  "Crash 500 Index",
+  "Boom 500 Index",
+  "Crash 1000 Index",
+  "Boom 1000 Index",
 ];
 
 function Mt5DirectPage() {

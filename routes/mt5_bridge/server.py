@@ -1,4 +1,4 @@
-"""MT5 Bridge — FastAPI server that wraps the native MetaTrader5 Python package.
+to"""MT5 Bridge — FastAPI server that wraps the native MetaTrader5 Python package.
 
 This bridge provides a REST API for MT5 trading operations. It requires the MT5
 terminal installed on Windows (MetaTrader5 Python package dependency).
@@ -335,29 +335,47 @@ async def order_send(req: OrderRequest):
     if symbol_info is None:
         raise HTTPException(status_code=400, detail=f"Symbol {req.symbol} not found")
     
-    # Map filling mode from string or integer input to broker constants
-    if isinstance(req.type_filling, int):
-        if req.type_filling == 0:
-            filling_mode = mt5.ORDER_FILLING_FOK
-        elif req.type_filling == 2:
-            filling_mode = mt5.ORDER_FILLING_RETURN
-        else:
-            filling_mode = mt5.ORDER_FILLING_IOC
-    else:
-        mode = (req.type_filling or "ioc").lower()
-        if mode == "fok":
-            filling_mode = mt5.ORDER_FILLING_FOK
-        elif mode == "return":
-            filling_mode = mt5.ORDER_FILLING_RETURN
-        else:
-            filling_mode = mt5.ORDER_FILLING_IOC
+    # Get tick price first since we need it for order_check
+    tick = mt5.symbol_info_tick(req.symbol)
+    if tick is None:
+        raise HTTPException(status_code=400, detail=f"Cannot get tick for {req.symbol}")
+    
+    # Detect the supported filling mode for this symbol
+    def get_supported_filling(volume: float, order_type: int, price: float) -> int:
+        """Try each filling mode with order_check to find one the broker accepts."""
+        for mode in (mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN):
+            test_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": req.symbol,
+                "volume": volume,
+                "type": order_type,
+                "price": price,
+                "type_filling": mode,
+                "type_time": mt5.ORDER_TIME_GTC,
+            }
+            try:
+                check = mt5.order_check(test_request)
+                if check and check.retcode == 0:
+                    return mode
+            except Exception:
+                continue
+        # Default to FOK as it works with Deriv synthetic indices
+        return mt5.ORDER_FILLING_FOK
+
+    # Determine the price (use provided price or get from tick)
+    price = req.price if req.price and req.price > 0 else 0.0
+    if price == 0.0:
+        price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+
+    # Find the supported filling mode
+    filling_mode = get_supported_filling(req.volume, order_type, price)
     
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": req.symbol,
         "volume": req.volume,
         "type": order_type,
-        "price": req.price if req.price and req.price > 0 else 0.0,
+        "price": price,
         "sl": req.sl or 0.0,
         "tp": req.tp or 0.0,
         "deviation": req.deviation or 20,

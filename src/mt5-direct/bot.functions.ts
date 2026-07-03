@@ -381,26 +381,25 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     }
 
     // 3) Execute — MT5 market order with SL/TP
-    // Check trade mode restrictions before placing order
+    // Adjust direction based on symbol trade mode if needed
     const tradeMode = symInfo?.tradeMode ?? "enabled";
     const isBuy = decision.direction === "CALL";
     const isSell = decision.direction === "PUT";
     
-    if ((tradeMode === "longonly" && isSell) || (tradeMode === "shortonly" && isBuy)) {
-      await supabaseAdmin.from("bot_activity").insert({
-        ...commonLog,
-        action: "SKIP",
-        direction: decision.direction,
-        entry_price: decision.entryPrice,
-        stake: decision.stake,
-        reasoning: "Trade blocked by symbol trade mode restriction",
-        risk_check: `tradeMode=${tradeMode}`,
-      });
-      await supabaseAdmin
-        .from("bot_runs")
-        .update({ last_tick_at: new Date().toISOString(), current_price: last.close } as any)
-        .eq("id", data.id);
-      return { ok: true, traded: false, skipped: true, reason: `tradeMode=${tradeMode}` };
+    // For shortonly symbols (only SELL allowed), flip BUY to SELL
+    // For longonly symbols (only BUY allowed), flip SELL to BUY
+    let adjustedDirection = decision.direction;
+    let adjustedIsBuy = isBuy;
+    let adjustedIsSell = isSell;
+    
+    if (tradeMode === "shortonly" && isBuy) {
+      adjustedDirection = "PUT";
+      adjustedIsBuy = false;
+      adjustedIsSell = true;
+    } else if (tradeMode === "longonly" && isSell) {
+      adjustedDirection = "CALL";
+      adjustedIsBuy = true;
+      adjustedIsSell = false;
     }
     
     const volume = symInfo
@@ -410,13 +409,14 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     const sl = decision.stopLoss == null ? undefined : roundToDigits(decision.stopLoss, digits);
     const tp = decision.takeProfit == null ? undefined : roundToDigits(decision.takeProfit, digits);
 
+    // Use adjusted direction for the order
     let ticket = 0;
     let fillPrice = decision.entryPrice;
     let orderErr: string | null = null;
     try {
       const result = await mt5.orderSend({
         symbol: (bot as any).symbol,
-        type: isSell ? "sell" : "buy",
+        type: adjustedIsSell ? "sell" : "buy",
         volume,
         sl,
         tp,
@@ -445,12 +445,14 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       return { ok: false, error: orderErr };
     }
 
+    // Use adjusted direction for the position and activity log
+    const finalDirection = adjustedDirection;
     const expiresEpoch = last.epoch + BOT_MAX_HOLD_CANDLES * tfSec;
     await supabaseAdmin.from("bot_positions").insert({
       user_id: context.userId,
       bot_run_id: data.id,
       symbol: (bot as any).symbol,
-      direction: decision.direction,
+      direction: finalDirection,
       account_type: (bot as any).account_type,
       market_mode: "mt5",
       stake: decision.stake,
@@ -465,19 +467,19 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       expires_epoch: expiresEpoch,
       status: "open",
       external_contract_id: String(ticket),
-      reasoning: decision.reasoning,
+      reasoning: `${tradeMode === "enabled" ? "" : "[Adjusted for tradeMode] "}${decision.reasoning}`,
     } as any);
 
     await supabaseAdmin.from("bot_activity").insert({
       ...commonLog,
       action: "ENTRY",
-      direction: decision.direction,
+      direction: finalDirection,
       entry_price: fillPrice,
       stake: decision.stake,
       stop_loss: sl ?? null,
       take_profit: tp ?? null,
       pnl: null,
-      reasoning: `MT5 ${decision.direction} ${volume} lots @ ${fillPrice} — ${decision.reasoning}`,
+      reasoning: `MT5 ${finalDirection} ${volume} lots @ ${fillPrice} — ${decision.reasoning}${tradeMode === "enabled" ? "" : ` (adjusted from ${decision.direction} for ${tradeMode})`}`,
       risk_check: `MT5 ticket ${ticket}`,
     });
 
