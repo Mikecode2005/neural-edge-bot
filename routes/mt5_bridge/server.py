@@ -15,13 +15,13 @@ import asyncio
 import logging
 import os
 import sys
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import BackgroundTasks
 from uuid import uuid4
 
@@ -69,7 +69,10 @@ class OrderRequest(BaseModel):
     comment: Optional[str] = ""
     magic: Optional[int] = 0
     deviation: Optional[int] = 20
-    type_filling: Optional[int] = 2  # ORDER_FILLING_IOC
+    type_filling: Optional[Union[str, int]] = Field("ioc", alias="typeFilling")
+
+    class Config:
+        allow_population_by_field_name = True
 
 
 class CloseRequest(BaseModel):
@@ -167,15 +170,45 @@ def _mt5_order_result_to_dict(result: Any) -> dict:
 
 
 def _mt5_rate_to_dict(rate: Any) -> dict:
+    # Support numpy.void records and objects with attributes
+    def _get(field: str):
+        if hasattr(rate, field):
+            return getattr(rate, field)
+        try:
+            return rate[field]
+        except Exception:
+            try:
+                # numpy structured array may expose fields via names
+                names = getattr(rate.dtype, "names", None)
+                if names and field in names:
+                    return rate[field]
+            except Exception:
+                return None
+        return None
+
+    def _to_native(val: Any) -> Any:
+        """Convert numpy scalars to native Python types for JSON serialization."""
+        if val is None:
+            return 0
+        try:
+            # Handle numpy integer types (int64, uint64, etc.)
+            if hasattr(val, "item"):
+                return val.item()
+            # Handle numpy floats
+            return float(val)
+        except Exception:
+            return val
+
+    t = _get("time")
     return {
-        "time": int(rate.time),
-        "open": rate.open,
-        "high": rate.high,
-        "low": rate.low,
-        "close": rate.close,
-        "tickVolume": rate.tick_volume,
-        "realVolume": rate.real_volume,
-        "spread": rate.spread,
+        "time": int(_to_native(t)) if t is not None else 0,
+        "open": float(_to_native(_get("open"))) or 0.0,
+        "high": float(_to_native(_get("high"))) or 0.0,
+        "low": float(_to_native(_get("low"))) or 0.0,
+        "close": float(_to_native(_get("close"))) or 0.0,
+        "tickVolume": int(_to_native(_get("tick_volume"))) or int(_to_native(_get("tickVolume"))) or 0,
+        "realVolume": int(_to_native(_get("real_volume"))) or int(_to_native(_get("realVolume"))) or 0,
+        "spread": int(_to_native(_get("spread"))) or 0,
     }
 
 
@@ -296,6 +329,29 @@ async def order_send(req: OrderRequest):
         raise HTTPException(status_code=400, detail="MT5 not initialized.")
     mt5 = _import_mt5()
     order_type = _order_type_to_mt5(req.type)
+    
+    # Get symbol info to check allowed filling modes
+    symbol_info = mt5.symbol_info(req.symbol)
+    if symbol_info is None:
+        raise HTTPException(status_code=400, detail=f"Symbol {req.symbol} not found")
+    
+    # Map filling mode from string or integer input to broker constants
+    if isinstance(req.type_filling, int):
+        if req.type_filling == 0:
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif req.type_filling == 2:
+            filling_mode = mt5.ORDER_FILLING_RETURN
+        else:
+            filling_mode = mt5.ORDER_FILLING_IOC
+    else:
+        mode = (req.type_filling or "ioc").lower()
+        if mode == "fok":
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif mode == "return":
+            filling_mode = mt5.ORDER_FILLING_RETURN
+        else:
+            filling_mode = mt5.ORDER_FILLING_IOC
+    
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": req.symbol,
@@ -308,19 +364,58 @@ async def order_send(req: OrderRequest):
         "magic": req.magic or 0,
         "comment": req.comment or "",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": req.type_filling or mt5.ORDER_FILLING_IOC,
+        "type_filling": filling_mode,
     }
     if not request["price"] or request["price"] == 0.0:
         tick = mt5.symbol_info_tick(req.symbol)
         if tick is None:
             raise HTTPException(status_code=400, detail=f"Cannot get tick for {req.symbol}")
         request["price"] = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
-    result = mt5.order_send(request)
+
+    def _try_send(req_body: dict) -> Any:
+        res = mt5.order_send(req_body)
+        if res is None:
+            return None
+        return res
+
+    result = _try_send(request)
     if result is None:
         err = mt5.last_error()
         raise HTTPException(status_code=500, detail=f"Order send failed: {err}")
+
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        raise HTTPException(status_code=400, detail=f"Order rejected (retcode={result.retcode}): {result.comment}")
+        # Try all fallback filling modes
+        initial_mode = request["type_filling"]
+        fallback_modes = []
+        if initial_mode != mt5.ORDER_FILLING_FOK:
+            fallback_modes.append(mt5.ORDER_FILLING_FOK)
+        if initial_mode != mt5.ORDER_FILLING_IOC:
+            fallback_modes.append(mt5.ORDER_FILLING_IOC)
+        if initial_mode != mt5.ORDER_FILLING_RETURN:
+            fallback_modes.append(mt5.ORDER_FILLING_RETURN)
+
+        for fallback in fallback_modes:
+            request["type_filling"] = fallback
+            result = _try_send(request)
+            if result is None:
+                continue
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                break
+
+        if result is None:
+            err = mt5.last_error()
+            raise HTTPException(status_code=500, detail=f"Order send failed: {err}")
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            # Last chance without explicit type_filling
+            request.pop("type_filling", None)
+            result = _try_send(request)
+            if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                return _mt5_order_result_to_dict(result)
+            if result is None:
+                err = mt5.last_error()
+                raise HTTPException(status_code=500, detail=f"Order send failed: {err}")
+            raise HTTPException(status_code=400, detail=f"Order rejected (retcode={result.retcode}): {result.comment}")
+
     return _mt5_order_result_to_dict(result)
 
 
@@ -366,10 +461,31 @@ async def rates(req: RatesRequest):
         raise HTTPException(status_code=400, detail="MT5 not initialized.")
     mt5 = _import_mt5()
     tf = _tf_to_mt5(req.timeframe)
-    rates_data = mt5.copy_rates_from_pos(req.symbol, tf, 0, req.count)
-    if rates_data is None or len(rates_data) == 0:
-        return []
-    return [_mt5_rate_to_dict(r) for r in rates_data]
+    try:
+        rates_data = mt5.copy_rates_from_pos(req.symbol, tf, 0, req.count)
+        log.info(f"rates_data type={type(rates_data)} len={len(rates_data) if rates_data is not None else 'None'}")
+        if rates_data is not None and len(rates_data) > 0:
+            first = rates_data[0]
+            try:
+                log.info(f"first rate type={type(first)} repr={repr(first)[:200]}")
+            except Exception:
+                log.info("first rate repr unavailable")
+        if rates_data is None or len(rates_data) == 0:
+            return []
+        out = []
+        for r in rates_data:
+            try:
+                out.append(_mt5_rate_to_dict(r))
+            except Exception as e:
+                try:
+                    preview = repr(r)[:200]
+                except Exception:
+                    preview = "<unrepresentable>"
+                out.append({"error": str(e), "type": str(type(r)), "repr": preview})
+        return out
+    except Exception as e:
+        log.exception("Rates fetch failed")
+        raise HTTPException(status_code=500, detail=f"Rates error: {e}")
 
 
 @app.post("/symbol-info")
@@ -488,7 +604,11 @@ async def _bot_loop(bot_id: str):
     while bot["status"] == "running":
         try:
             rates = mt5.copy_rates_from_pos(symbol, _tf_to_mt5(tf), 0, 3)
-            closes = [r.close for r in rates] if rates else []
+            if not rates:
+                closes = []
+            else:
+                rates_list = [_mt5_rate_to_dict(r) for r in rates]
+                closes = [r.get("close", 0.0) for r in rates_list]
             ts = int(datetime.now(tz=timezone.utc).timestamp())
             decision = "scan"
             details = {}

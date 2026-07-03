@@ -16,8 +16,11 @@ import {
   makeObFvgBotDecision,
   markOpenPosition,
   BOT_MAX_HOLD_CANDLES,
+  formatObZone,
+  formatFvgZone,
   type OpenBotPositionLike,
 } from "@/lib/bots/bot-engine";
+import { analyze } from "@/lib/ob-fvg";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -90,6 +93,7 @@ const StartInput = z.object({
   account_balance: z.number().positive().default(1000),
   volume: z.number().positive().default(0.01),
   account_type: z.enum(["demo", "real"]).default("demo"),
+  strategy_mode: z.enum(["qwen", "ob-fvg"]).default("ob-fvg"),
 });
 
 // ── Public server functions ──────────────────────────────────────────────
@@ -112,7 +116,7 @@ export const mt5StartBot = createServerFn({ method: "POST" })
         min_confidence: data.min_confidence,
         max_stake_per_trade: data.max_stake_per_trade,
         min_stake_per_trade: data.min_stake_per_trade,
-        strategy_mode: "ob-fvg",
+        strategy_mode: data.strategy_mode,
         account_balance: data.account_balance,
         // stash MT5 volume in ai_config so we don't need a schema change
         ai_config: { volume: data.volume },
@@ -284,13 +288,61 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     const locked = Number((botFresh as any)?.locked_stake ?? 0);
     const available = balance + totalPnl - locked;
 
-    // 2) Analyze new decision
-    const decision = makeObFvgBotDecision(candles, {
-      minConfidence: Number((bot as any).min_confidence ?? 0.65),
-      availableBalance: available,
-      minStake: Number((bot as any).min_stake_per_trade ?? 1),
-      maxStake: Number((bot as any).max_stake_per_trade ?? 50),
-    });
+    // 2) Analyze new decision - choose strategy based on bot's strategy_mode
+    const strategyMode = (botFresh as any)?.strategy_mode ?? "ob-fvg";
+    const obFvgAnalysis = analyze(candles); // Always get OB+FVG analysis for indicators
+
+    let decision;
+    if (strategyMode === "qwen") {
+      // Use Qwen AI for decision
+      try {
+        const { analyzeMarket } = await import("@/lib/ai/qwen.functions");
+        const qwenResult = await analyzeMarket({
+          data: {
+            symbol: (bot as any).symbol,
+            timeframe: bot.timeframe ?? "1m",
+            candles: candles.slice(-60),
+            ob_zones: obFvgAnalysis.activeOB ? [{ type: obFvgAnalysis.activeOB.kind, top: obFvgAnalysis.activeOB.top, bottom: obFvgAnalysis.activeOB.bottom }] : [],
+            fvg_zones: obFvgAnalysis.activeFVG ? [{ type: obFvgAnalysis.activeFVG.kind, top: obFvgAnalysis.activeFVG.top, bottom: obFvgAnalysis.activeFVG.bottom }] : [],
+            current_price: last.close,
+            balance: available,
+          },
+        });
+        const qwen = qwenResult as any;
+        const direction = qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
+        decision = {
+          shouldTrade: direction !== "NONE" && Number(qwen.confidence ?? 0) >= Number((bot as any).min_confidence ?? 0.65),
+          direction: direction as "CALL" | "PUT" | "NONE",
+          confidence: Number(qwen.confidence ?? 0),
+          entryPrice: last.close,
+          stake: Math.min((botFresh as any)?.max_stake_per_trade ?? 50, available),
+          stopLoss: qwen.stop_loss ?? null,
+          takeProfit: qwen.take_profit ?? null,
+          duration: BOT_MAX_HOLD_CANDLES,
+          durationUnit: "m" as const,
+          analysis: obFvgAnalysis,
+          reasoning: `Qwen AI: ${qwen.reasoning ?? "No reasoning provided"}`,
+          obZone: formatObZone(obFvgAnalysis),
+          fvgZone: formatFvgZone(obFvgAnalysis),
+        };
+      } catch (e: any) {
+        // Fallback to OB+FVG if Qwen fails
+        decision = makeObFvgBotDecision(candles, {
+          minConfidence: Number((bot as any).min_confidence ?? 0.65),
+          availableBalance: available,
+          minStake: Number((bot as any).min_stake_per_trade ?? 1),
+          maxStake: Number((bot as any).max_stake_per_trade ?? 50),
+        });
+      }
+    } else {
+      // Use OB+FVG strategy
+      decision = makeObFvgBotDecision(candles, {
+        minConfidence: Number((bot as any).min_confidence ?? 0.65),
+        availableBalance: available,
+        minStake: Number((bot as any).min_stake_per_trade ?? 1),
+        maxStake: Number((bot as any).max_stake_per_trade ?? 50),
+      });
+    }
 
     const commonLog = {
       user_id: context.userId,
@@ -329,6 +381,28 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     }
 
     // 3) Execute — MT5 market order with SL/TP
+    // Check trade mode restrictions before placing order
+    const tradeMode = symInfo?.tradeMode ?? "enabled";
+    const isBuy = decision.direction === "CALL";
+    const isSell = decision.direction === "PUT";
+    
+    if ((tradeMode === "longonly" && isSell) || (tradeMode === "shortonly" && isBuy)) {
+      await supabaseAdmin.from("bot_activity").insert({
+        ...commonLog,
+        action: "SKIP",
+        direction: decision.direction,
+        entry_price: decision.entryPrice,
+        stake: decision.stake,
+        reasoning: "Trade blocked by symbol trade mode restriction",
+        risk_check: `tradeMode=${tradeMode}`,
+      });
+      await supabaseAdmin
+        .from("bot_runs")
+        .update({ last_tick_at: new Date().toISOString(), current_price: last.close } as any)
+        .eq("id", data.id);
+      return { ok: true, traded: false, skipped: true, reason: `tradeMode=${tradeMode}` };
+    }
+    
     const volume = symInfo
       ? normalizeVolume(Number(((bot as any).ai_config?.volume) ?? 0.01), symInfo)
       : Number(((bot as any).ai_config?.volume) ?? 0.01);
@@ -342,7 +416,7 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     try {
       const result = await mt5.orderSend({
         symbol: (bot as any).symbol,
-        type: decision.direction === "CALL" ? "buy" : "sell",
+        type: isSell ? "sell" : "buy",
         volume,
         sl,
         tp,

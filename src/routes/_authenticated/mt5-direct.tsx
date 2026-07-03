@@ -138,7 +138,7 @@ function Mt5DirectPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const loopsRef = useRef<Map<string, number>>(new Map());
 
-  const [form, setForm] = useState({
+const [form, setForm] = useState({
     symbol: "EURUSD",
     interval_seconds: 60,
     min_confidence: 0.7,
@@ -147,6 +147,7 @@ function Mt5DirectPage() {
     account_balance: 1000,
     volume: 0.01,
     account_type: "demo" as "demo" | "real",
+    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg",
   });
 
   // ── Data loading ──
@@ -459,6 +460,17 @@ function Mt5DirectPage() {
               <Label className="text-xs">Volume (lots)</Label>
               <Input type="number" step={0.01} min={0.01} value={form.volume}
                 onChange={(e) => setForm({ ...form, volume: Number(e.target.value) })} />
+            </div>
+            <div>
+              <Label className="text-xs">Strategy Mode</Label>
+              <select
+                className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
+                value={form.strategy_mode}
+                onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as "qwen" | "ob-fvg" })}
+              >
+                <option value="ob-fvg">OB + FVG Only</option>
+                <option value="qwen">Qwen AI</option>
+              </select>
             </div>
           </div>
           <Button onClick={onCreate} className="gap-1.5">
