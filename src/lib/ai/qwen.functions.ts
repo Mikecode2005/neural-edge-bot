@@ -6,7 +6,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
-import { analyze } from "../ob-fvg";
+import { analyze, analyzeMulti, analyzeMeanReversion, analyzeMomentum } from "../ob-fvg";
 
 const Candle = z.object({
   epoch: z.number(),
