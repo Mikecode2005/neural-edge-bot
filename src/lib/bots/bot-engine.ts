@@ -1,5 +1,5 @@
 import type { Candle } from "@/lib/deriv-ws";
-import { analyze, type LiveAnalysis } from "@/lib/ob-fvg";
+import { analyze, analyzeMulti, type LiveAnalysis, type StrategyKind } from "@/lib/ob-fvg";
 
 export const BOT_PAYOUT_RATE = 0.85;
 export const BOT_MAX_HOLD_CANDLES = 10;
