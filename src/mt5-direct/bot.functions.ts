@@ -100,7 +100,7 @@ function validateMt5TradeSetup(args: {
   const atr = Number(decision.analysis?.atr14 ?? 0);
   const trend = String(decision.analysis?.trend ?? "").toLowerCase();
 
-  if (Number(decision.confidence ?? 0) < 0.7) errors.push("confidence below MT5 safety floor 70%");
+  if (Number(decision.confidence ?? 0) < 0.5) errors.push("confidence below MT5 safety floor 50%");
   if (!sl || !tp) errors.push("missing SL/TP");
   if (risk == null || reward == null || risk <= 0 || reward <= 0)
     errors.push("invalid risk/reward distance");
