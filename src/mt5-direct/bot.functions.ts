@@ -478,6 +478,7 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
           reasoning: `Qwen AI: ${qwen.reasoning ?? "No reasoning provided"}`,
           obZone: formatObZone(obFvgAnalysis),
           fvgZone: formatFvgZone(obFvgAnalysis),
+          strategy: "ob-fvg" as const,
         };
       } catch (e: any) {
         // Fallback to OB+FVG if Qwen fails
