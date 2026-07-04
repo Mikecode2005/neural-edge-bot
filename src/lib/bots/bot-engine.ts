@@ -20,6 +20,7 @@ export interface BotDecision {
   reasoning: string;
   obZone: string | null;
   fvgZone: string | null;
+  strategy: StrategyKind;
 }
 
 export interface OpenBotPositionLike {
