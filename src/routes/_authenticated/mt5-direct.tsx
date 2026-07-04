@@ -460,8 +460,10 @@ function Mt5DirectPage() {
             <Zap className="size-3.5 text-primary" /> New MT5 Bot
           </h2>
           <p className="text-xs text-muted-foreground -mt-2">
-            Same OB+FVG engine as the Bots page — analyzes MT5 candles, sets SL/TP from the active
-            order block, and sends a market order at your locked stake.
+            Multi-strategy engine (OB+FVG · Momentum · Mean-Reversion) with hard institutional gates,
+            HTF alignment, loss-streak brake, and optional Qwen AI overlay. Position sizing is by
+            <span className="text-primary font-medium"> lots</span> — dollar risk is derived from
+            your SL distance × MT5 pip value.
           </p>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
             <div>
@@ -472,9 +474,7 @@ function Mt5DirectPage() {
                 onChange={(e) => setForm({ ...form, symbol: e.target.value })}
               >
                 {MT5_SYMBOLS.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
+                  <option key={s} value={s}>{s}</option>
                 ))}
               </select>
             </div>
@@ -483,9 +483,7 @@ function Mt5DirectPage() {
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.account_type}
-                onChange={(e) =>
-                  setForm({ ...form, account_type: e.target.value as "demo" | "real" })
-                }
+                onChange={(e) => setForm({ ...form, account_type: e.target.value as "demo" | "real" })}
               >
                 <option value="demo">Demo</option>
                 <option value="real">Real (live money)</option>
@@ -513,36 +511,6 @@ function Mt5DirectPage() {
               />
             </div>
             <div>
-              <Label className="text-xs">Lock-in Stake ($)</Label>
-              <Input
-                type="number"
-                step={1}
-                min={1}
-                value={form.max_stake_per_trade}
-                onChange={(e) => setForm({ ...form, max_stake_per_trade: Number(e.target.value) })}
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Min Stake ($)</Label>
-              <Input
-                type="number"
-                step={0.5}
-                min={0.35}
-                value={form.min_stake_per_trade}
-                onChange={(e) => setForm({ ...form, min_stake_per_trade: Number(e.target.value) })}
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Account Balance ($)</Label>
-              <Input
-                type="number"
-                step={10}
-                min={1}
-                value={form.account_balance}
-                onChange={(e) => setForm({ ...form, account_balance: Number(e.target.value) })}
-              />
-            </div>
-            <div>
               <Label className="text-xs">Volume (lots)</Label>
               <Input
                 type="number"
@@ -551,17 +519,20 @@ function Mt5DirectPage() {
                 value={form.volume}
                 onChange={(e) => setForm({ ...form, volume: Number(e.target.value) })}
               />
+              <p className="text-[10px] text-muted-foreground mt-1">
+                ≈ risk/trade: <span className="text-foreground">{estimateRisk(form.volume, form.symbol)}</span>
+                {" "}(1.5·ATR SL)
+              </p>
             </div>
             <div>
               <Label className="text-xs">Strategy Mode</Label>
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.strategy_mode}
-                onChange={(e) =>
-                  setForm({ ...form, strategy_mode: e.target.value as "qwen" | "ob-fvg" })
-                }
+                onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as any })}
               >
-                <option value="ob-fvg">OB + FVG Only</option>
+                <option value="ob-fvg">Multi-Strategy (recommended)</option>
+                <option value="ob-fvg-strict">OB + FVG only</option>
                 <option value="qwen">Qwen AI</option>
               </select>
             </div>
