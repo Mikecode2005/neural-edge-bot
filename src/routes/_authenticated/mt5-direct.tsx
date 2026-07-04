@@ -141,6 +141,25 @@ const MT5_SYMBOLS = [
   "Boom 1000 Index",
 ];
 
+// Rough per-trade $ risk estimate: lots × pipValue × pipsOfSL. We assume 1.5×ATR SL and use
+// conservative pip-value defaults per symbol family (real value comes from MT5 broker at fill).
+function estimateRisk(lots: number, symbol: string): string {
+  const s = symbol.toLowerCase();
+  const isJpy = s.includes("jpy");
+  const isGold = s.includes("xau");
+  const isBtc = s.includes("btc");
+  const isVol = s.includes("volatility") || s.includes("crash") || s.includes("boom");
+  // pip $ per 1.0 lot approximations
+  let pipValue = 10;      // majors
+  let assumedPips = 20;   // 1.5*ATR ≈ 20 pips on 1m majors
+  if (isJpy) { pipValue = 9; assumedPips = 20; }
+  if (isGold) { pipValue = 10; assumedPips = 30; }
+  if (isBtc) { pipValue = 1; assumedPips = 200; }
+  if (isVol) { pipValue = 1; assumedPips = 40; }
+  const risk = lots * pipValue * assumedPips;
+  return `$${risk.toFixed(2)}`;
+}
+
 function Mt5DirectPage() {
   const fnConnect = useServerFn(mt5Connect);
   const fnDisconnect = useServerFn(mt5Disconnect);
@@ -170,12 +189,12 @@ function Mt5DirectPage() {
     symbol: "EURUSD",
     interval_seconds: 60,
     min_confidence: 0.7,
-    max_stake_per_trade: 50,
+    max_stake_per_trade: 50, // kept for backend compat; not surfaced in UI
     min_stake_per_trade: 1,
     account_balance: 1000,
     volume: 0.01,
     account_type: "demo" as "demo" | "real",
-    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg",
+    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg" | "ob-fvg-strict",
   });
 
   // ── Data loading ──
@@ -460,8 +479,10 @@ function Mt5DirectPage() {
             <Zap className="size-3.5 text-primary" /> New MT5 Bot
           </h2>
           <p className="text-xs text-muted-foreground -mt-2">
-            Same OB+FVG engine as the Bots page — analyzes MT5 candles, sets SL/TP from the active
-            order block, and sends a market order at your locked stake.
+            Multi-strategy engine (OB+FVG · Momentum · Mean-Reversion) with hard institutional gates,
+            HTF alignment, loss-streak brake, and optional Qwen AI overlay. Position sizing is by
+            <span className="text-primary font-medium"> lots</span> — dollar risk is derived from
+            your SL distance × MT5 pip value.
           </p>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
             <div>
@@ -472,9 +493,7 @@ function Mt5DirectPage() {
                 onChange={(e) => setForm({ ...form, symbol: e.target.value })}
               >
                 {MT5_SYMBOLS.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
+                  <option key={s} value={s}>{s}</option>
                 ))}
               </select>
             </div>
@@ -483,9 +502,7 @@ function Mt5DirectPage() {
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.account_type}
-                onChange={(e) =>
-                  setForm({ ...form, account_type: e.target.value as "demo" | "real" })
-                }
+                onChange={(e) => setForm({ ...form, account_type: e.target.value as "demo" | "real" })}
               >
                 <option value="demo">Demo</option>
                 <option value="real">Real (live money)</option>
@@ -513,36 +530,6 @@ function Mt5DirectPage() {
               />
             </div>
             <div>
-              <Label className="text-xs">Lock-in Stake ($)</Label>
-              <Input
-                type="number"
-                step={1}
-                min={1}
-                value={form.max_stake_per_trade}
-                onChange={(e) => setForm({ ...form, max_stake_per_trade: Number(e.target.value) })}
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Min Stake ($)</Label>
-              <Input
-                type="number"
-                step={0.5}
-                min={0.35}
-                value={form.min_stake_per_trade}
-                onChange={(e) => setForm({ ...form, min_stake_per_trade: Number(e.target.value) })}
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Account Balance ($)</Label>
-              <Input
-                type="number"
-                step={10}
-                min={1}
-                value={form.account_balance}
-                onChange={(e) => setForm({ ...form, account_balance: Number(e.target.value) })}
-              />
-            </div>
-            <div>
               <Label className="text-xs">Volume (lots)</Label>
               <Input
                 type="number"
@@ -551,17 +538,20 @@ function Mt5DirectPage() {
                 value={form.volume}
                 onChange={(e) => setForm({ ...form, volume: Number(e.target.value) })}
               />
+              <p className="text-[10px] text-muted-foreground mt-1">
+                ≈ risk/trade: <span className="text-foreground">{estimateRisk(form.volume, form.symbol)}</span>
+                {" "}(1.5·ATR SL)
+              </p>
             </div>
             <div>
               <Label className="text-xs">Strategy Mode</Label>
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.strategy_mode}
-                onChange={(e) =>
-                  setForm({ ...form, strategy_mode: e.target.value as "qwen" | "ob-fvg" })
-                }
+                onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as any })}
               >
-                <option value="ob-fvg">OB + FVG Only</option>
+                <option value="ob-fvg">Multi-Strategy (recommended)</option>
+                <option value="ob-fvg-strict">OB + FVG only</option>
                 <option value="qwen">Qwen AI</option>
               </select>
             </div>
@@ -626,13 +616,15 @@ function Mt5DirectPage() {
                       min conf {(bot.min_confidence * 100).toFixed(0)}%
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      stake ${bot.max_stake_per_trade}
+                      {bot.ai_config?.volume ?? 0.01} lots
                     </span>
-                    {bot.ai_config?.volume && (
-                      <span className="text-xs text-muted-foreground">
-                        {bot.ai_config.volume} lots
-                      </span>
-                    )}
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                      {(bot as any).strategy_mode === "qwen"
+                        ? "Qwen AI"
+                        : (bot as any).strategy_mode === "ob-fvg-strict"
+                          ? "OB+FVG strict"
+                          : "Multi-Strategy"}
+                    </Badge>
                   </div>
                   <div className="flex items-center gap-2">
                     <Button

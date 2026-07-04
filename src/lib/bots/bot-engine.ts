@@ -1,5 +1,5 @@
 import type { Candle } from "@/lib/deriv-ws";
-import { analyze, type LiveAnalysis } from "@/lib/ob-fvg";
+import { analyze, analyzeMulti, type LiveAnalysis, type StrategyKind } from "@/lib/ob-fvg";
 
 export const BOT_PAYOUT_RATE = 0.85;
 export const BOT_MAX_HOLD_CANDLES = 10;
@@ -20,6 +20,7 @@ export interface BotDecision {
   reasoning: string;
   obZone: string | null;
   fvgZone: string | null;
+  strategy: StrategyKind;
 }
 
 export interface OpenBotPositionLike {
@@ -80,43 +81,24 @@ export function makeObFvgBotDecision(
     availableBalance: number;
     minStake: number;
     maxStake: number;
+    consecutiveLosses?: number;
+    useMultiStrategy?: boolean;
   },
 ): BotDecision {
-  const window = candles.slice(-61);
-  const analysis = analyze(window);
+  const window = candles.slice(-200);
+  const analysis = opts.useMultiStrategy === false ? analyze(window) : analyzeMulti(window);
   const last = window.at(-1);
   const obZone = formatObZone(analysis);
   const fvgZone = formatFvgZone(analysis);
 
-  // Use OB midpoint as entry when available, otherwise use close price
   const entryPrice = analysis.entry ?? last?.close ?? 0;
 
-  // Determine direction from analysis - use confidence to decide even if strict filters fail
   let direction: BotDirection | "NONE" = "NONE";
-  if (analysis.activeOB && analysis.activeFVG) {
-    // If we have an active OB+FVG setup, determine direction from the OB kind
-    direction = analysis.activeOB.kind === "bullish" ? "CALL" : "PUT";
-  } else if (analysis.decision === "BUY") {
-    direction = "CALL";
-  } else if (analysis.decision === "SELL") {
-    direction = "PUT";
-  }
+  if (analysis.decision === "BUY") direction = "CALL";
+  else if (analysis.decision === "SELL") direction = "PUT";
 
-  // Use analysis SL/TP when available, otherwise calculate from entry
-  const stopLoss =
-    analysis.sl ??
-    (direction === "CALL"
-      ? entryPrice - 1.0 * analysis.atr14
-      : direction === "PUT"
-        ? entryPrice + 1.0 * analysis.atr14
-        : null);
-  const takeProfit =
-    analysis.tp ??
-    (direction === "CALL"
-      ? entryPrice + 1.5 * analysis.atr14
-      : direction === "PUT"
-        ? entryPrice - 1.5 * analysis.atr14
-        : null);
+  const stopLoss = analysis.sl ?? null;
+  const takeProfit = analysis.tp ?? null;
 
   const stake = calculateBotStake({
     availableBalance: opts.availableBalance,
@@ -124,14 +106,21 @@ export function makeObFvgBotDecision(
     maxStake: opts.maxStake,
   });
 
-  // Trade when confidence meets threshold AND we have a direction
-  const confidenceOk = analysis.confidence >= opts.minConfidence;
+  // Loss-streak brake: bump required confidence by +0.10 after 3+ consecutive losses.
+  const streak = Math.max(0, opts.consecutiveLosses ?? 0);
+  const effectiveThreshold = streak >= 3 ? Math.min(0.98, opts.minConfidence + 0.10) : opts.minConfidence;
+  const confidenceOk = analysis.confidence >= effectiveThreshold;
+
   const shouldTrade = direction !== "NONE" && confidenceOk && stake > 0;
 
+  const brake = streak >= 3
+    ? ` | Loss-streak brake active (${streak} losses) — threshold raised to ${(effectiveThreshold * 100).toFixed(0)}%`
+    : "";
   const below = confidenceOk
     ? ""
-    : ` | Confidence ${(analysis.confidence * 100).toFixed(0)}% below threshold ${(opts.minConfidence * 100).toFixed(0)}%`;
+    : ` | Confidence ${(analysis.confidence * 100).toFixed(0)}% below threshold ${(effectiveThreshold * 100).toFixed(0)}%`;
   const noFunds = stake > 0 ? "" : " | Available balance is below minimum stake";
+  const strat = analysis.strategy ?? "ob-fvg";
 
   return {
     shouldTrade,
@@ -144,9 +133,10 @@ export function makeObFvgBotDecision(
     duration: BOT_MAX_HOLD_CANDLES,
     durationUnit: "m",
     analysis,
-    reasoning: `OB+FVG Analysis: ${analysis.rationale}${below}${noFunds}`,
+    reasoning: `[${strat}] ${analysis.rationale}${below}${brake}${noFunds}`,
     obZone,
     fvgZone,
+    strategy: strat,
   };
 }
 

@@ -171,7 +171,7 @@ const StartInput = z.object({
   account_balance: z.number().positive().default(1000),
   volume: z.number().positive().default(0.01),
   account_type: z.enum(["demo", "real"]).default("demo"),
-  strategy_mode: z.enum(["qwen", "ob-fvg"]).default("ob-fvg"),
+  strategy_mode: z.enum(["qwen", "ob-fvg", "ob-fvg-strict"]).default("ob-fvg"),
 });
 
 // ── Public server functions ──────────────────────────────────────────────
@@ -423,13 +423,29 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     const locked = Number((botFresh as any)?.locked_stake ?? 0);
     const available = balance + totalPnl - locked;
 
+    // Compute consecutive losses from the last 10 EXIT rows (loss-streak brake)
+    const { data: recentExits } = await supabaseAdmin
+      .from("bot_activity")
+      .select("action, pnl, created_at")
+      .eq("user_id", context.userId)
+      .eq("bot_run_id", data.id)
+      .eq("action", "EXIT")
+      .order("created_at", { ascending: false })
+      .limit(10);
+    let consecutiveLosses = 0;
+    for (const row of recentExits ?? []) {
+      if (Number((row as any).pnl ?? 0) < 0) consecutiveLosses += 1;
+      else break;
+    }
+
     // 2) Analyze new decision - choose strategy based on bot's strategy_mode
     const strategyMode = (botFresh as any)?.strategy_mode ?? "ob-fvg";
-    const obFvgAnalysis = analyze(candles); // Always get OB+FVG analysis for indicators
+    const { analyzeMulti } = await import("@/lib/ob-fvg");
+    const multiAnalysis = analyzeMulti(candles);
+    const obFvgAnalysis = analyze(candles); // for OB/FVG zones in logs
 
     let decision;
     if (strategyMode === "qwen") {
-      // Use Qwen AI for decision
       try {
         const { analyzeMarket } = await import("@/lib/ai/qwen.functions");
         const qwenResult = await analyzeMarket({
@@ -438,22 +454,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
             timeframe: bot.timeframe ?? "1m",
             candles: candles.slice(-60),
             ob_zones: obFvgAnalysis.activeOB
-              ? [
-                  {
-                    type: obFvgAnalysis.activeOB.kind,
-                    top: obFvgAnalysis.activeOB.top,
-                    bottom: obFvgAnalysis.activeOB.bottom,
-                  },
-                ]
+              ? [{ type: obFvgAnalysis.activeOB.kind, top: obFvgAnalysis.activeOB.top, bottom: obFvgAnalysis.activeOB.bottom }]
               : [],
             fvg_zones: obFvgAnalysis.activeFVG
-              ? [
-                  {
-                    type: obFvgAnalysis.activeFVG.kind,
-                    top: obFvgAnalysis.activeFVG.top,
-                    bottom: obFvgAnalysis.activeFVG.bottom,
-                  },
-                ]
+              ? [{ type: obFvgAnalysis.activeFVG.kind, top: obFvgAnalysis.activeFVG.top, bottom: obFvgAnalysis.activeFVG.bottom }]
               : [],
             current_price: last.close,
             balance: available,
@@ -462,10 +466,11 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         const qwen = qwenResult as any;
         const direction =
           qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
+        const streakThreshold = consecutiveLosses >= 3
+          ? Math.min(0.98, Number((bot as any).min_confidence ?? 0.65) + 0.10)
+          : Number((bot as any).min_confidence ?? 0.65);
         decision = {
-          shouldTrade:
-            direction !== "NONE" &&
-            Number(qwen.confidence ?? 0) >= Number((bot as any).min_confidence ?? 0.65),
+          shouldTrade: direction !== "NONE" && Number(qwen.confidence ?? 0) >= streakThreshold,
           direction: direction as "CALL" | "PUT" | "NONE",
           confidence: Number(qwen.confidence ?? 0),
           entryPrice: last.close,
@@ -474,27 +479,31 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
           takeProfit: qwen.take_profit ?? null,
           duration: BOT_MAX_HOLD_CANDLES,
           durationUnit: "m" as const,
-          analysis: obFvgAnalysis,
-          reasoning: `Qwen AI: ${qwen.reasoning ?? "No reasoning provided"}`,
+          analysis: multiAnalysis,
+          reasoning: `Qwen AI: ${qwen.reasoning ?? "No reasoning provided"}${consecutiveLosses >= 3 ? ` | Loss-streak brake +10% (${consecutiveLosses})` : ""}`,
           obZone: formatObZone(obFvgAnalysis),
           fvgZone: formatFvgZone(obFvgAnalysis),
+          strategy: "ob-fvg" as const,
         };
-      } catch (e: any) {
-        // Fallback to OB+FVG if Qwen fails
+      } catch {
         decision = makeObFvgBotDecision(candles, {
           minConfidence: Number((bot as any).min_confidence ?? 0.65),
           availableBalance: available,
           minStake: Number((bot as any).min_stake_per_trade ?? 1),
           maxStake: Number((bot as any).max_stake_per_trade ?? 50),
+          consecutiveLosses,
+          useMultiStrategy: true,
         });
       }
     } else {
-      // Use OB+FVG strategy
+      // OB+FVG-only or multi-strategy (default: multi)
       decision = makeObFvgBotDecision(candles, {
         minConfidence: Number((bot as any).min_confidence ?? 0.65),
         availableBalance: available,
         minStake: Number((bot as any).min_stake_per_trade ?? 1),
         maxStake: Number((bot as any).max_stake_per_trade ?? 50),
+        consecutiveLosses,
+        useMultiStrategy: strategyMode !== "ob-fvg-strict",
       });
     }
 

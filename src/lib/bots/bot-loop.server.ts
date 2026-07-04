@@ -259,6 +259,7 @@ export async function analyzeBotDecision(botId: string, candles: Candle[]) {
         reasoning: `Qwen AI: ${qwen.reasoning ?? "No reasoning provided"}`,
         obZone: analysis.activeOB ? `${analysis.activeOB.kind} OB [${analysis.activeOB.bottom.toFixed(4)}, ${analysis.activeOB.top.toFixed(4)}]` : null,
         fvgZone: analysis.activeFVG ? `${analysis.activeFVG.kind} FVG [${analysis.activeFVG.bottom.toFixed(4)}, ${analysis.activeFVG.top.toFixed(4)}]` : null,
+        strategy: "ob-fvg",
       };
 
       return {
