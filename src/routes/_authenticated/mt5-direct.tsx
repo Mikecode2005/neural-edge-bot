@@ -616,13 +616,15 @@ function Mt5DirectPage() {
                       min conf {(bot.min_confidence * 100).toFixed(0)}%
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      stake ${bot.max_stake_per_trade}
+                      {bot.ai_config?.volume ?? 0.01} lots
                     </span>
-                    {bot.ai_config?.volume && (
-                      <span className="text-xs text-muted-foreground">
-                        {bot.ai_config.volume} lots
-                      </span>
-                    )}
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                      {(bot as any).strategy_mode === "qwen"
+                        ? "Qwen AI"
+                        : (bot as any).strategy_mode === "ob-fvg-strict"
+                          ? "OB+FVG strict"
+                          : "Multi-Strategy"}
+                    </Badge>
                   </div>
                   <div className="flex items-center gap-2">
                     <Button
