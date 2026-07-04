@@ -170,12 +170,12 @@ function Mt5DirectPage() {
     symbol: "EURUSD",
     interval_seconds: 60,
     min_confidence: 0.7,
-    max_stake_per_trade: 50,
+    max_stake_per_trade: 50, // kept for backend compat; not surfaced in UI
     min_stake_per_trade: 1,
     account_balance: 1000,
     volume: 0.01,
     account_type: "demo" as "demo" | "real",
-    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg",
+    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg" | "ob-fvg-strict",
   });
 
   // ── Data loading ──
