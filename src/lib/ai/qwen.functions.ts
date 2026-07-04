@@ -130,6 +130,9 @@ export const analyzeMarket = createServerFn({ method: "POST" })
 
     // 1. Calculate institutional indicators and structure server-side
     const analysis = analyze(data.candles);
+    const multi = analyzeMulti(data.candles);
+    const mr = analyzeMeanReversion(data.candles);
+    const mo = analyzeMomentum(data.candles);
 
     // 2. Recall lessons learned
     const { data: memory } = await supabaseAdmin
