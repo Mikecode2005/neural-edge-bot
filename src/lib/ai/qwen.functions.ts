@@ -181,13 +181,16 @@ export const analyzeMarket = createServerFn({ method: "POST" })
           bottom: analysis.activeFVG.bottom,
           size: analysis.activeFVG.size
         } : null,
+        bollinger: { upper: analysis.bollUpper, lower: analysis.bollLower, mid: analysis.bollMid },
+      },
+      strategy_signals: {
+        ob_fvg: { decision: analysis.decision, confidence: analysis.confidence, gates_failed: analysis.gateFailures ?? [], rationale: analysis.rationale },
+        momentum: { decision: mo.decision, confidence: mo.confidence, gates_failed: mo.gateFailures ?? [], rationale: mo.rationale },
+        mean_reversion: { decision: mr.decision, confidence: mr.confidence, gates_failed: mr.gateFailures ?? [], rationale: mr.rationale },
+        best_pick: { strategy: multi.strategy, decision: multi.decision, confidence: multi.confidence },
       },
       recent_candles: recent.map((c) => ({
-        t: c.epoch,
-        o: c.open,
-        h: c.high,
-        l: c.low,
-        c: c.close,
+        t: c.epoch, o: c.open, h: c.high, l: c.low, c: c.close,
       })),
       lessons_learned: lessons || "(none yet)",
     });
