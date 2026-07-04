@@ -25,6 +25,8 @@
 import type {
   Mt5Credentials,
   Mt5AccountInfo,
+  Mt5Deal,
+  Mt5HistoryOrder,
   Mt5Position,
   Mt5OrderRequest,
   Mt5OrderResult,
@@ -41,17 +43,13 @@ const VITE_MT5_BRIDGE_URL =
   (process.env.MT5_BRIDGE_URL as string | undefined) ??
   (import.meta.env as Record<string, string>).VITE_MT5_BRIDGE_URL ??
   "http://localhost:8765";
-const VITE_MT5_LIB_MODE =
-  ((process.env.MT5_LIB_MODE as Mt5LibraryMode) ??
+const VITE_MT5_LIB_MODE = ((process.env.MT5_LIB_MODE as Mt5LibraryMode) ??
   (import.meta.env as Record<string, string>).VITE_MT5_LIB_MODE ??
   "python-bridge") as Mt5LibraryMode;
 
 // ── Python Bridge helpers ──
 
-async function bridgeFetch<T>(
-  endpoint: string,
-  body?: unknown,
-): Promise<T> {
+async function bridgeFetch<T>(endpoint: string, body?: unknown): Promise<T> {
   const res = await fetch(`${VITE_MT5_BRIDGE_URL}${endpoint}`, {
     method: body ? "POST" : "GET",
     headers: { "Content-Type": "application/json" },
@@ -86,7 +84,10 @@ export class Mt5Client {
   async initialize(creds?: Mt5Credentials): Promise<void> {
     this.creds = creds ?? null;
 
-    const res = await bridgeFetch<{ status: string; login?: number; server?: string }>("/initialize", creds);
+    const res = await bridgeFetch<{ status: string; login?: number; server?: string }>(
+      "/initialize",
+      creds,
+    );
     if (res.status !== "ok") throw new Error("Bridge init failed");
     this._connected = true;
   }
@@ -102,6 +103,22 @@ export class Mt5Client {
 
   async positions(): Promise<Mt5Position[]> {
     return bridgeFetch<Mt5Position[]>("/positions");
+  }
+
+  async history(fromDate = 0, toDate = 0): Promise<Mt5Deal[]> {
+    const query = new URLSearchParams({
+      from_date: String(fromDate),
+      to_date: String(toDate),
+    });
+    return bridgeFetch<Mt5Deal[]>(`/history?${query.toString()}`);
+  }
+
+  async historyOrders(fromDate = 0, toDate = 0): Promise<Mt5HistoryOrder[]> {
+    const query = new URLSearchParams({
+      from_date: String(fromDate),
+      to_date: String(toDate),
+    });
+    return bridgeFetch<Mt5HistoryOrder[]>(`/history-orders?${query.toString()}`);
   }
 
   async orderSend(req: Mt5OrderRequest): Promise<Mt5OrderResult> {

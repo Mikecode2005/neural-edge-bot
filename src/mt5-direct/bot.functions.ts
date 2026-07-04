@@ -80,6 +80,86 @@ function normalizeVolume(vol: number, info: Mt5SymbolInfo) {
   return Number((steps * step).toFixed(2));
 }
 
+function validateMt5TradeSetup(args: {
+  decision: any;
+  symInfo: Mt5SymbolInfo | null;
+  account: { equity?: number; marginFree?: number; marginLevel?: number } | null;
+  volume: number;
+  sl?: number;
+  tp?: number;
+  entryPrice: number;
+  isSell: boolean;
+}) {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const { decision, symInfo, account, volume, sl, tp, entryPrice, isSell } = args;
+  const risk = sl == null ? null : Math.abs(entryPrice - sl);
+  const reward = tp == null ? null : Math.abs(tp - entryPrice);
+  const rr = risk && reward ? reward / risk : 0;
+  const spreadPrice = symInfo ? Number(symInfo.spread ?? 0) * Number(symInfo.point ?? 0) : 0;
+  const atr = Number(decision.analysis?.atr14 ?? 0);
+  const trend = String(decision.analysis?.trend ?? "").toLowerCase();
+
+  if (Number(decision.confidence ?? 0) < 0.7) errors.push("confidence below MT5 safety floor 70%");
+  if (!sl || !tp) errors.push("missing SL/TP");
+  if (risk == null || reward == null || risk <= 0 || reward <= 0)
+    errors.push("invalid risk/reward distance");
+  if (rr > 0 && rr < 1.2) errors.push(`RR ${rr.toFixed(2)} below minimum 1.20`);
+  if (isSell && sl != null && sl <= entryPrice) errors.push("SELL stop loss must be above entry");
+  if (isSell && tp != null && tp >= entryPrice) errors.push("SELL take profit must be below entry");
+  if (!isSell && sl != null && sl >= entryPrice) errors.push("BUY stop loss must be below entry");
+  if (!isSell && tp != null && tp <= entryPrice) errors.push("BUY take profit must be above entry");
+  if (atr > 0 && spreadPrice > atr * 0.25) errors.push("spread is too large relative to ATR");
+  if (atr > 0 && risk != null && risk < atr * 0.35)
+    warnings.push("stop may be too tight for current volatility");
+  if (trend.includes("bear") && !isSell) errors.push("BUY rejected: trend alignment is bearish");
+  if (trend.includes("bull") && isSell) errors.push("SELL rejected: trend alignment is bullish");
+  if (account?.marginFree != null && account.marginFree <= 0)
+    errors.push("no free margin available");
+  if (account?.marginLevel != null && account.marginLevel > 0 && account.marginLevel < 250) {
+    errors.push(`margin level ${account.marginLevel.toFixed(0)}% below safety floor 250%`);
+  }
+  if (volume <= 0) errors.push("invalid volume");
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    risk,
+    reward,
+    rr: rr ? Number(rr.toFixed(2)) : null,
+    spreadPrice,
+  };
+}
+
+function netDealProfit(deal: { profit?: number; commission?: number; swap?: number }) {
+  return Number(deal.profit ?? 0) + Number(deal.commission ?? 0) + Number(deal.swap ?? 0);
+}
+
+async function getRealizedMt5Profit(
+  mt5: Awaited<ReturnType<typeof ensureConnected>>,
+  ticket: number,
+) {
+  try {
+    const history = await mt5.history(
+      Math.floor(Date.now() / 1000) - 86400 * 7,
+      Math.floor(Date.now() / 1000),
+    );
+    const related = history.filter((deal: any) => {
+      const positionId = Number(deal.positionId ?? 0);
+      const order = Number(deal.order ?? 0);
+      const dealTicket = Number(deal.ticket ?? 0);
+      return positionId === ticket || order === ticket || dealTicket === ticket;
+    });
+    if (!related.length) return null;
+    return Number(
+      related.reduce((sum: number, deal: any) => sum + netDealProfit(deal), 0).toFixed(2),
+    );
+  } catch {
+    return null;
+  }
+}
+
 // ── Schemas ──────────────────────────────────────────────────────────────
 
 const StartInput = z.object({
@@ -220,7 +300,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       /* ignore — we can still mark positions */
     }
 
-    // 1) Mark any open positions and close via MT5 when SL/TP hit
+    // 1) Mark any open positions using MT5 broker truth.
+    // IMPORTANT: MT5 is CFD-style, not binary options. Do not use the Deriv
+    // simulator payout (+stake*0.85 / -stake) for MT5 results; use MT5's
+    // position.profit / deal history so spread, bid/ask fill and slippage are reflected.
     const { data: openRows } = await supabaseAdmin
       .from("bot_positions")
       .select("*")
@@ -241,26 +324,48 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
           (pos as any).expires_epoch == null ? null : Number((pos as any).expires_epoch),
       };
       const mark = markOpenPosition(like, last);
+      const externalTicket = (pos as any).external_contract_id
+        ? Number((pos as any).external_contract_id)
+        : null;
+      let mt5Position: any = null;
+      if (externalTicket) {
+        try {
+          mt5Position =
+            (await mt5.positions()).find((p: any) => Number(p.ticket) === externalTicket) ?? null;
+        } catch {
+          mt5Position = null;
+        }
+      }
 
       if (mark.closed) {
-        const externalTicket = (pos as any).external_contract_id
-          ? Number((pos as any).external_contract_id)
-          : null;
+        let brokerPnl = mt5Position ? Number(mt5Position.profit ?? 0) : null;
+        let closeNote = externalTicket ? `MT5 ticket ${externalTicket}` : "Local settlement";
         if (externalTicket) {
           try {
             await mt5.positionsClose(externalTicket);
+            const realized = await getRealizedMt5Profit(mt5, externalTicket);
+            if (realized != null) brokerPnl = realized;
+            closeNote = `MT5 ticket ${externalTicket} closed`;
           } catch (e) {
-            // continue — we still record the settlement locally
+            // continue — if MT5 already closed the position via TP/SL, history may still contain truth
+            const realized = await getRealizedMt5Profit(mt5, externalTicket);
+            if (realized != null) brokerPnl = realized;
+            closeNote =
+              realized != null
+                ? `MT5 ticket ${externalTicket} already closed by broker`
+                : `MT5 close failed for ticket ${externalTicket}`;
             console.error("mt5 close failed", e);
           }
         }
+        const pnl = Number((brokerPnl ?? 0).toFixed(2));
+        const outcome = pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven";
         await supabaseAdmin
           .from("bot_positions")
           .update({
             status: "closed",
-            outcome: mark.outcome,
+            outcome,
             exit_price: mark.exitPrice,
-            pnl: mark.pnl,
+            pnl,
             floating_pnl: 0,
             current_price: last.close,
             closed_at: new Date().toISOString(),
@@ -275,18 +380,18 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
           direction: (pos as any).direction,
           entry_price: Number((pos as any).entry_price),
           stake: Number((pos as any).stake),
-          pnl: mark.pnl,
-          reasoning: `MT5 ${mark.outcome?.toUpperCase()} — ${mark.reason}`,
-          risk_check: externalTicket ? `MT5 ticket ${externalTicket} closed` : "Local settlement",
+          pnl,
+          reasoning: `MT5 ${outcome.toUpperCase()} — ${mark.reason}. Broker P&L ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`,
+          risk_check: closeNote,
         } as any);
 
         await supabaseAdmin
           .from("bot_runs")
           .update({
-            total_pnl: Number((bot as any).total_pnl ?? 0) + mark.pnl,
+            total_pnl: Number((bot as any).total_pnl ?? 0) + pnl,
             total_trades: Number((bot as any).total_trades ?? 0) + 1,
-            wins: Number((bot as any).wins ?? 0) + (mark.outcome === "win" ? 1 : 0),
-            losses: Number((bot as any).losses ?? 0) + (mark.outcome === "loss" ? 1 : 0),
+            wins: Number((bot as any).wins ?? 0) + (outcome === "win" ? 1 : 0),
+            losses: Number((bot as any).losses ?? 0) + (outcome === "loss" ? 1 : 0),
             locked_stake: Math.max(
               0,
               Number((bot as any).locked_stake ?? 0) - Number((pos as any).stake),
@@ -294,9 +399,15 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
           } as any)
           .eq("id", data.id);
       } else {
+        const floatingPnl = mt5Position
+          ? Number(Number(mt5Position.profit ?? 0).toFixed(2))
+          : mark.floatingPnl;
         await supabaseAdmin
           .from("bot_positions")
-          .update({ current_price: last.close, floating_pnl: mark.floatingPnl } as any)
+          .update({
+            current_price: mt5Position?.priceCurrent ?? last.close,
+            floating_pnl: floatingPnl,
+          } as any)
           .eq("id", (pos as any).id);
       }
     }
@@ -451,6 +562,44 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     const digits = symInfo?.digits ?? 5;
     const sl = decision.stopLoss == null ? undefined : roundToDigits(decision.stopLoss, digits);
     const tp = decision.takeProfit == null ? undefined : roundToDigits(decision.takeProfit, digits);
+
+    let accountInfo: any = null;
+    try {
+      accountInfo = await mt5.accountInfo();
+    } catch {
+      accountInfo = null;
+    }
+
+    const guard = validateMt5TradeSetup({
+      decision,
+      symInfo,
+      account: accountInfo,
+      volume,
+      sl,
+      tp,
+      entryPrice: decision.entryPrice,
+      isSell: adjustedIsSell,
+    });
+
+    if (!guard.ok) {
+      await supabaseAdmin.from("bot_activity").insert({
+        ...commonLog,
+        action: "SKIP",
+        direction: adjustedDirection,
+        entry_price: decision.entryPrice,
+        stake: decision.stake,
+        stop_loss: sl ?? null,
+        take_profit: tp ?? null,
+        pnl: null,
+        reasoning: `MT5 trade rejected by execution guard: ${guard.errors.join("; ")}`,
+        risk_check: `RR ${guard.rr ?? "—"} | Risk ${guard.risk?.toFixed(5) ?? "—"} | Reward ${guard.reward?.toFixed(5) ?? "—"} | Spread ${guard.spreadPrice.toFixed(5)}${guard.warnings.length ? ` | Warnings: ${guard.warnings.join("; ")}` : ""}`,
+      } as any);
+      await supabaseAdmin
+        .from("bot_runs")
+        .update({ last_tick_at: new Date().toISOString(), current_price: last.close } as any)
+        .eq("id", data.id);
+      return { ok: true, traded: false, rejected: true, guard };
+    }
 
     // Use adjusted direction for the order
     let ticket = 0;

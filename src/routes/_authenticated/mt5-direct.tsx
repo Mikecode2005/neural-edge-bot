@@ -33,6 +33,7 @@ import {
   mt5Disconnect,
   mt5AccountInfo,
   mt5Status,
+  mt5PerformanceReport,
 } from "@/mt5-direct/api";
 import { mt5StartBot, mt5ListBots, mt5RunBotTick } from "@/mt5-direct/bot.functions";
 import {
@@ -41,7 +42,7 @@ import {
   listOpenBotPositions,
   resetBotStats,
 } from "@/lib/bots/bots.functions";
-import type { Mt5AccountInfo } from "@/mt5-direct/types";
+import type { Mt5AccountInfo, Mt5PerformanceReport } from "@/mt5-direct/types";
 
 export const Route = createFileRoute("/_authenticated/mt5-direct")({
   head: () => ({ meta: [{ title: "MT5 Direct — AI Bots on MetaTrader 5" }] }),
@@ -145,6 +146,7 @@ function Mt5DirectPage() {
   const fnDisconnect = useServerFn(mt5Disconnect);
   const fnAccount = useServerFn(mt5AccountInfo);
   const fnStatus = useServerFn(mt5Status);
+  const fnReport = useServerFn(mt5PerformanceReport);
   const fnStart = useServerFn(mt5StartBot);
   const fnList = useServerFn(mt5ListBots);
   const fnTick = useServerFn(mt5RunBotTick);
@@ -158,12 +160,13 @@ function Mt5DirectPage() {
   const [connecting, setConnecting] = useState(false);
 
   const [bots, setBots] = useState<BotRow[]>([]);
+  const [report, setReport] = useState<Mt5PerformanceReport | null>(null);
   const [activity, setActivity] = useState<Map<string, ActivityEntry[]>>(new Map());
   const [positions, setPositions] = useState<Map<string, OpenPos[]>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const loopsRef = useRef<Map<string, number>>(new Map());
 
-const [form, setForm] = useState({
+  const [form, setForm] = useState({
     symbol: "EURUSD",
     interval_seconds: 60,
     min_confidence: 0.7,
@@ -206,18 +209,21 @@ const [form, setForm] = useState({
     });
     setPositions((prev) => {
       const next = new Map(prev);
-      next.set(botId, pos.map((p) => ({
-        id: p.id,
-        direction: p.direction,
-        stake: Number(p.stake ?? 0),
-        entry_price: Number(p.entry_price ?? 0),
-        current_price: p.current_price == null ? null : Number(p.current_price),
-        stop_loss: p.stop_loss == null ? null : Number(p.stop_loss),
-        take_profit: p.take_profit == null ? null : Number(p.take_profit),
-        floating_pnl: Number(p.floating_pnl ?? 0),
-        external_contract_id: p.external_contract_id ?? null,
-        opened_at: p.opened_at,
-      })));
+      next.set(
+        botId,
+        pos.map((p) => ({
+          id: p.id,
+          direction: p.direction,
+          stake: Number(p.stake ?? 0),
+          entry_price: Number(p.entry_price ?? 0),
+          current_price: p.current_price == null ? null : Number(p.current_price),
+          stop_loss: p.stop_loss == null ? null : Number(p.stop_loss),
+          take_profit: p.take_profit == null ? null : Number(p.take_profit),
+          floating_pnl: Number(p.floating_pnl ?? 0),
+          external_contract_id: p.external_contract_id ?? null,
+          opened_at: p.opened_at,
+        })),
+      );
       return next;
     });
   };
@@ -225,6 +231,11 @@ const [form, setForm] = useState({
   const loadBots = async () => {
     const rows = (await fnList()) as BotRow[];
     setBots(rows);
+    const brokerReport = await fnReport();
+    if (!("error" in brokerReport)) {
+      setReport(brokerReport as Mt5PerformanceReport);
+      setAccount((brokerReport as Mt5PerformanceReport).account);
+    }
     await Promise.all(rows.slice(0, 20).map((b) => refreshBot(b.id).catch(() => {})));
   };
 
@@ -310,7 +321,10 @@ const [form, setForm] = useState({
       return;
     }
     if (form.account_type === "real") {
-      if (!confirm("Start an MT5 bot on a REAL account? This will place live trades with real money.")) return;
+      if (
+        !confirm("Start an MT5 bot on a REAL account? This will place live trades with real money.")
+      )
+        return;
     }
     try {
       const row = (await fnStart({ data: form })) as BotRow;
@@ -378,7 +392,9 @@ const [form, setForm] = useState({
           <div className="flex items-center gap-2">
             {connected ? (
               <>
-                <Badge variant="default" className="gap-1"><Activity className="size-3" /> Connected</Badge>
+                <Badge variant="default" className="gap-1">
+                  <Activity className="size-3" /> Connected
+                </Badge>
                 <Button size="sm" variant="outline" onClick={refreshAccount} className="gap-1">
                   <RefreshCw className="size-3.5" /> Refresh
                 </Button>
@@ -399,7 +415,8 @@ const [form, setForm] = useState({
           <div className="glass rounded-xl p-8 text-center space-y-2">
             <p className="text-muted-foreground">
               Click "Connect to MT5" to open the bridge session using your{" "}
-              <code className="bg-card px-1 rounded">MT5_ACCOUNT_LOGIN / PASSWORD / SERVER</code> env vars.
+              <code className="bg-card px-1 rounded">MT5_ACCOUNT_LOGIN / PASSWORD / SERVER</code>{" "}
+              env vars.
             </p>
             <p className="text-xs text-muted-foreground">
               Bots need an active MT5 connection to fetch candles and place orders.
@@ -417,10 +434,22 @@ const [form, setForm] = useState({
               <InfoBadge label="Name" value={account.name} />
               <InfoBadge label="Currency" value={account.currency} />
               <InfoBadge label="Leverage" value={`1:${account.leverage}`} />
-              <InfoBadge label="Balance" value={`$${account.balance.toFixed(2)}`} tone={account.balance >= 0 ? "bull" : "bear"} />
-              <InfoBadge label="Equity" value={`$${account.equity.toFixed(2)}`} tone={account.equity >= 0 ? "bull" : "bear"} />
+              <InfoBadge
+                label="Balance"
+                value={`$${account.balance.toFixed(2)}`}
+                tone={account.balance >= 0 ? "bull" : "bear"}
+              />
+              <InfoBadge
+                label="Equity"
+                value={`$${account.equity.toFixed(2)}`}
+                tone={account.equity >= 0 ? "bull" : "bear"}
+              />
               <InfoBadge label="Margin" value={`$${account.margin.toFixed(2)}`} />
-              <InfoBadge label="Free Margin" value={`$${account.marginFree.toFixed(2)}`} tone={account.marginFree > 0 ? "bull" : "bear"} />
+              <InfoBadge
+                label="Free Margin"
+                value={`$${account.marginFree.toFixed(2)}`}
+                tone={account.marginFree > 0 ? "bull" : "bear"}
+              />
             </div>
           </div>
         )}
@@ -431,8 +460,8 @@ const [form, setForm] = useState({
             <Zap className="size-3.5 text-primary" /> New MT5 Bot
           </h2>
           <p className="text-xs text-muted-foreground -mt-2">
-            Same OB+FVG engine as the Bots page — analyzes MT5 candles, sets SL/TP from the
-            active order block, and sends a market order at your locked stake.
+            Same OB+FVG engine as the Bots page — analyzes MT5 candles, sets SL/TP from the active
+            order block, and sends a market order at your locked stake.
           </p>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
             <div>
@@ -442,7 +471,11 @@ const [form, setForm] = useState({
                 value={form.symbol}
                 onChange={(e) => setForm({ ...form, symbol: e.target.value })}
               >
-                {MT5_SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
+                {MT5_SYMBOLS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -450,7 +483,9 @@ const [form, setForm] = useState({
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.account_type}
-                onChange={(e) => setForm({ ...form, account_type: e.target.value as "demo" | "real" })}
+                onChange={(e) =>
+                  setForm({ ...form, account_type: e.target.value as "demo" | "real" })
+                }
               >
                 <option value="demo">Demo</option>
                 <option value="real">Real (live money)</option>
@@ -458,40 +493,73 @@ const [form, setForm] = useState({
             </div>
             <div>
               <Label className="text-xs">Interval (sec)</Label>
-              <Input type="number" min={10} max={3600} value={form.interval_seconds}
-                onChange={(e) => setForm({ ...form, interval_seconds: Number(e.target.value) })} />
+              <Input
+                type="number"
+                min={10}
+                max={3600}
+                value={form.interval_seconds}
+                onChange={(e) => setForm({ ...form, interval_seconds: Number(e.target.value) })}
+              />
             </div>
             <div>
               <Label className="text-xs">Min Confidence</Label>
-              <Input type="number" step={0.05} min={0} max={1} value={form.min_confidence}
-                onChange={(e) => setForm({ ...form, min_confidence: Number(e.target.value) })} />
+              <Input
+                type="number"
+                step={0.05}
+                min={0}
+                max={1}
+                value={form.min_confidence}
+                onChange={(e) => setForm({ ...form, min_confidence: Number(e.target.value) })}
+              />
             </div>
             <div>
               <Label className="text-xs">Lock-in Stake ($)</Label>
-              <Input type="number" step={1} min={1} value={form.max_stake_per_trade}
-                onChange={(e) => setForm({ ...form, max_stake_per_trade: Number(e.target.value) })} />
+              <Input
+                type="number"
+                step={1}
+                min={1}
+                value={form.max_stake_per_trade}
+                onChange={(e) => setForm({ ...form, max_stake_per_trade: Number(e.target.value) })}
+              />
             </div>
             <div>
               <Label className="text-xs">Min Stake ($)</Label>
-              <Input type="number" step={0.5} min={0.35} value={form.min_stake_per_trade}
-                onChange={(e) => setForm({ ...form, min_stake_per_trade: Number(e.target.value) })} />
+              <Input
+                type="number"
+                step={0.5}
+                min={0.35}
+                value={form.min_stake_per_trade}
+                onChange={(e) => setForm({ ...form, min_stake_per_trade: Number(e.target.value) })}
+              />
             </div>
             <div>
               <Label className="text-xs">Account Balance ($)</Label>
-              <Input type="number" step={10} min={1} value={form.account_balance}
-                onChange={(e) => setForm({ ...form, account_balance: Number(e.target.value) })} />
+              <Input
+                type="number"
+                step={10}
+                min={1}
+                value={form.account_balance}
+                onChange={(e) => setForm({ ...form, account_balance: Number(e.target.value) })}
+              />
             </div>
             <div>
               <Label className="text-xs">Volume (lots)</Label>
-              <Input type="number" step={0.01} min={0.01} value={form.volume}
-                onChange={(e) => setForm({ ...form, volume: Number(e.target.value) })} />
+              <Input
+                type="number"
+                step={0.01}
+                min={0.01}
+                value={form.volume}
+                onChange={(e) => setForm({ ...form, volume: Number(e.target.value) })}
+              />
             </div>
             <div>
               <Label className="text-xs">Strategy Mode</Label>
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.strategy_mode}
-                onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as "qwen" | "ob-fvg" })}
+                onChange={(e) =>
+                  setForm({ ...form, strategy_mode: e.target.value as "qwen" | "ob-fvg" })
+                }
               >
                 <option value="ob-fvg">OB + FVG Only</option>
                 <option value="qwen">Qwen AI</option>
@@ -522,33 +590,79 @@ const [form, setForm] = useState({
             const pos = positions.get(bot.id) ?? [];
             const balance = Number(bot.account_balance ?? 0);
             const locked = Number(bot.locked_stake ?? 0);
-            const floating = pos.reduce((s, p) => s + p.floating_pnl, 0);
-            const available = balance + Number(bot.total_pnl ?? 0) - locked;
-            const equity = available + locked + floating;
+            const brokerOpen = report?.openPositions ?? [];
+            const floating = brokerOpen.reduce((s, p) => s + Number(p.profit ?? 0), 0);
+            const brokerPnl = report?.netProfit ?? Number(bot.total_pnl ?? 0);
+            const available = report?.account.marginFree ?? balance + brokerPnl - locked;
+            const equity = report?.account.equity ?? available + locked + floating;
+            const truthStats = report
+              ? {
+                  trades: report.totalTrades,
+                  wins: report.wins,
+                  losses: report.losses,
+                  winRate: report.winRate,
+                }
+              : stats;
             return (
               <div key={bot.id} className="glass rounded-xl overflow-hidden">
                 <div className="p-4 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 flex-wrap">
-                    <Badge variant={bot.status === "running" ? "default" : "secondary"} className="gap-1">
-                      {bot.status === "running" ? <Activity className="size-3" /> : <Square className="size-3" />}
+                    <Badge
+                      variant={bot.status === "running" ? "default" : "secondary"}
+                      className="gap-1"
+                    >
+                      {bot.status === "running" ? (
+                        <Activity className="size-3" />
+                      ) : (
+                        <Square className="size-3" />
+                      )}
                       {bot.status}
                     </Badge>
                     <span className="font-semibold text-sm">{bot.symbol}</span>
-                    <span className="text-xs text-muted-foreground">{bot.timeframe} · every {bot.interval_seconds}s</span>
-                    <span className="text-xs text-muted-foreground">min conf {(bot.min_confidence * 100).toFixed(0)}%</span>
-                    <span className="text-xs text-muted-foreground">stake ${bot.max_stake_per_trade}</span>
-                    {bot.ai_config?.volume && <span className="text-xs text-muted-foreground">{bot.ai_config.volume} lots</span>}
+                    <span className="text-xs text-muted-foreground">
+                      {bot.timeframe} · every {bot.interval_seconds}s
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      min conf {(bot.min_confidence * 100).toFixed(0)}%
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      stake ${bot.max_stake_per_trade}
+                    </span>
+                    {bot.ai_config?.volume && (
+                      <span className="text-xs text-muted-foreground">
+                        {bot.ai_config.volume} lots
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button size="sm" variant="ghost" onClick={() => toggleExpand(bot.id)} className="h-7 gap-1 text-xs">
-                      {isOpen ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => toggleExpand(bot.id)}
+                      className="h-7 gap-1 text-xs"
+                    >
+                      {isOpen ? (
+                        <ChevronUp className="size-3" />
+                      ) : (
+                        <ChevronDown className="size-3" />
+                      )}
                       Details
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => onReset(bot.id)} className="h-7 gap-1 text-xs">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => onReset(bot.id)}
+                      className="h-7 gap-1 text-xs"
+                    >
                       <Trash2 className="size-3" /> Reset
                     </Button>
                     {bot.status === "running" ? (
-                      <Button size="sm" variant="destructive" onClick={() => onStop(bot.id)} className="h-7 gap-1 text-xs">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => onStop(bot.id)}
+                        className="h-7 gap-1 text-xs"
+                      >
                         <Square className="size-3" /> Stop
                       </Button>
                     ) : null}
@@ -558,20 +672,69 @@ const [form, setForm] = useState({
                 {/* stats row */}
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-2 px-4 pb-3">
                   <MetaCell label="Balance" value={`$${balance.toFixed(2)}`} />
-                  <MetaCell label="Available" value={`$${available.toFixed(2)}`} tone={available >= balance ? "bull" : "bear"} />
+                  <MetaCell
+                    label="Available"
+                    value={`$${available.toFixed(2)}`}
+                    tone={available >= balance ? "bull" : "bear"}
+                  />
                   <MetaCell label="Locked" value={`$${locked.toFixed(2)}`} />
-                  <MetaCell label="Open P&L" value={`${floating >= 0 ? "+" : ""}$${floating.toFixed(2)}`} tone={floating >= 0 ? "bull" : "bear"} />
-                  <MetaCell label="Total P&L" value={`${(bot.total_pnl ?? 0) >= 0 ? "+" : ""}$${Number(bot.total_pnl ?? 0).toFixed(2)}`} tone={(bot.total_pnl ?? 0) >= 0 ? "bull" : "bear"} />
+                  <MetaCell
+                    label="Open P&L"
+                    value={`${floating >= 0 ? "+" : ""}$${floating.toFixed(2)}`}
+                    tone={floating >= 0 ? "bull" : "bear"}
+                  />
+                  <MetaCell
+                    label="Total P&L"
+                    value={`${brokerPnl >= 0 ? "+" : ""}$${brokerPnl.toFixed(2)}`}
+                    tone={brokerPnl >= 0 ? "bull" : "bear"}
+                  />
                   <MetaCell label="Equity" value={`$${equity.toFixed(2)}`} />
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-2 px-4 pb-4">
-                  <MetaCell label="Trades" value={String(stats.trades)} />
-                  <MetaCell label="Wins" value={String(stats.wins)} tone="bull" />
-                  <MetaCell label="Losses" value={String(stats.losses)} tone="bear" />
-                  <MetaCell label="Win rate" value={`${stats.winRate.toFixed(0)}%`} />
+                  <MetaCell label="Trades" value={String(truthStats.trades)} />
+                  <MetaCell label="Wins" value={String(truthStats.wins)} tone="bull" />
+                  <MetaCell label="Losses" value={String(truthStats.losses)} tone="bear" />
+                  <MetaCell label="Win rate" value={`${truthStats.winRate.toFixed(0)}%`} />
                   <MetaCell label="Scans" value={String(stats.scans)} />
-                  <MetaCell label="Errors" value={String(stats.errors)} tone={stats.errors ? "bear" : undefined} />
+                  <MetaCell
+                    label="Errors"
+                    value={String(stats.errors)}
+                    tone={stats.errors ? "bear" : undefined}
+                  />
                 </div>
+
+                {report && (
+                  <div className="grid grid-cols-2 md:grid-cols-6 gap-2 px-4 pb-4">
+                    <MetaCell
+                      label="Profit Factor"
+                      value={report.profitFactor == null ? "∞" : report.profitFactor.toFixed(2)}
+                    />
+                    <MetaCell
+                      label="Avg Win"
+                      value={`$${report.averageWin.toFixed(2)}`}
+                      tone="bull"
+                    />
+                    <MetaCell
+                      label="Avg Loss"
+                      value={`$${report.averageLoss.toFixed(2)}`}
+                      tone="bear"
+                    />
+                    <MetaCell
+                      label="Expectancy"
+                      value={`$${report.expectancy.toFixed(2)}`}
+                      tone={report.expectancy >= 0 ? "bull" : "bear"}
+                    />
+                    <MetaCell
+                      label="Drawdown"
+                      value={`$${report.drawdown.toFixed(2)}`}
+                      tone={report.drawdown > 0 ? "bear" : undefined}
+                    />
+                    <MetaCell
+                      label="Avg Hold"
+                      value={`${Math.round(report.averageHoldingSeconds / 60)}m`}
+                    />
+                  </div>
+                )}
 
                 {bot.last_error && (
                   <div className="mx-4 mb-3 text-xs px-3 py-2 rounded-md bg-destructive/10 border border-destructive/30 text-destructive">
@@ -580,7 +743,8 @@ const [form, setForm] = useState({
                 )}
                 {bot.last_tick_at && (
                   <div className="px-4 pb-3 text-[10px] text-muted-foreground flex items-center gap-1">
-                    <Clock className="size-3" /> Last tick {new Date(bot.last_tick_at).toLocaleTimeString()}
+                    <Clock className="size-3" /> Last tick{" "}
+                    {new Date(bot.last_tick_at).toLocaleTimeString()}
                   </div>
                 )}
 
@@ -611,14 +775,28 @@ const [form, setForm] = useState({
                             <tbody>
                               {pos.map((p) => (
                                 <tr key={p.id} className="border-t border-border/30">
-                                  <td className="px-2 py-1 numeric">{p.external_contract_id ?? "—"}</td>
-                                  <td className={`px-2 py-1 font-semibold ${p.direction === "CALL" ? "text-bull" : "text-bear"}`}>{p.direction}</td>
+                                  <td className="px-2 py-1 numeric">
+                                    {p.external_contract_id ?? "—"}
+                                  </td>
+                                  <td
+                                    className={`px-2 py-1 font-semibold ${p.direction === "CALL" ? "text-bull" : "text-bear"}`}
+                                  >
+                                    {p.direction}
+                                  </td>
                                   <td className="px-2 py-1 numeric">{p.entry_price.toFixed(4)}</td>
-                                  <td className="px-2 py-1 numeric">{p.current_price?.toFixed(4) ?? "—"}</td>
-                                  <td className="px-2 py-1 numeric">{p.stop_loss?.toFixed(4) ?? "—"}</td>
-                                  <td className="px-2 py-1 numeric">{p.take_profit?.toFixed(4) ?? "—"}</td>
+                                  <td className="px-2 py-1 numeric">
+                                    {p.current_price?.toFixed(4) ?? "—"}
+                                  </td>
+                                  <td className="px-2 py-1 numeric">
+                                    {p.stop_loss?.toFixed(4) ?? "—"}
+                                  </td>
+                                  <td className="px-2 py-1 numeric">
+                                    {p.take_profit?.toFixed(4) ?? "—"}
+                                  </td>
                                   <td className="px-2 py-1 numeric">${p.stake.toFixed(2)}</td>
-                                  <td className={`px-2 py-1 numeric font-semibold ${p.floating_pnl >= 0 ? "text-bull" : "text-bear"}`}>
+                                  <td
+                                    className={`px-2 py-1 numeric font-semibold ${p.floating_pnl >= 0 ? "text-bull" : "text-bear"}`}
+                                  >
                                     {p.floating_pnl >= 0 ? "+" : ""}${p.floating_pnl.toFixed(2)}
                                   </td>
                                 </tr>
@@ -630,31 +808,116 @@ const [form, setForm] = useState({
                     </div>
 
                     {/* Activity feed */}
+                    {report && report.trades.length > 0 && (
+                      <div className="p-4">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1">
+                          <BarChart3 className="size-3" /> MT5 Broker Trade Audit (
+                          {report.trades.length})
+                        </h3>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[11px]">
+                            <thead>
+                              <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                                <th className="px-2 py-1">Ticket</th>
+                                <th className="px-2 py-1">Type</th>
+                                <th className="px-2 py-1">Entry</th>
+                                <th className="px-2 py-1">Exit</th>
+                                <th className="px-2 py-1">SL</th>
+                                <th className="px-2 py-1">TP</th>
+                                <th className="px-2 py-1">RR</th>
+                                <th className="px-2 py-1">MFE</th>
+                                <th className="px-2 py-1">MAE</th>
+                                <th className="px-2 py-1">P&L</th>
+                                <th className="px-2 py-1">Reason</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {report.trades.slice(0, 25).map((t) => (
+                                <tr
+                                  key={t.positionId}
+                                  className="border-t border-border/30 align-top"
+                                >
+                                  <td className="px-2 py-1 numeric">{t.positionId}</td>
+                                  <td
+                                    className={`px-2 py-1 font-semibold ${t.type === "BUY" ? "text-bull" : "text-bear"}`}
+                                  >
+                                    {t.type}
+                                  </td>
+                                  <td className="px-2 py-1 numeric">{t.entryPrice.toFixed(4)}</td>
+                                  <td className="px-2 py-1 numeric">{t.exitPrice.toFixed(4)}</td>
+                                  <td className="px-2 py-1 numeric">
+                                    {t.stopLoss?.toFixed(4) ?? "—"}
+                                  </td>
+                                  <td className="px-2 py-1 numeric">
+                                    {t.takeProfit?.toFixed(4) ?? "—"}
+                                  </td>
+                                  <td className="px-2 py-1 numeric">
+                                    {t.riskRewardRatio?.toFixed(2) ?? "—"}
+                                  </td>
+                                  <td className="px-2 py-1 numeric">{t.mfe?.toFixed(4) ?? "—"}</td>
+                                  <td className="px-2 py-1 numeric">{t.mae?.toFixed(4) ?? "—"}</td>
+                                  <td
+                                    className={`px-2 py-1 numeric font-semibold ${t.profit >= 0 ? "text-bull" : "text-bear"}`}
+                                  >
+                                    {t.profit >= 0 ? "+" : ""}${t.profit.toFixed(2)}
+                                  </td>
+                                  <td className="px-2 py-1 text-muted-foreground max-w-[260px]">
+                                    {t.exitReason}: {t.diagnosis.join(" ")}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="p-4">
                       <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1">
                         <Terminal /> Activity ({logs.length})
                       </h3>
                       <div className="max-h-[420px] overflow-y-auto space-y-1">
                         {logs.length === 0 && (
-                          <p className="text-xs text-muted-foreground">No activity yet — waiting for the first tick.</p>
+                          <p className="text-xs text-muted-foreground">
+                            No activity yet — waiting for the first tick.
+                          </p>
                         )}
                         {logs.map((l) => (
-                          <div key={l.id} className="text-[11px] leading-snug px-2 py-1.5 rounded bg-card/40 border border-border/30">
+                          <div
+                            key={l.id}
+                            className="text-[11px] leading-snug px-2 py-1.5 rounded bg-card/40 border border-border/30"
+                          >
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-muted-foreground tabular-nums">{new Date(l.timestamp).toLocaleTimeString()}</span>
+                              <span className="text-muted-foreground tabular-nums">
+                                {new Date(l.timestamp).toLocaleTimeString()}
+                              </span>
                               <ActionBadge action={l.action} />
-                              {l.direction !== "—" && <span className={`font-semibold ${l.direction === "CALL" ? "text-bull" : l.direction === "PUT" ? "text-bear" : ""}`}>{l.direction}</span>}
+                              {l.direction !== "—" && (
+                                <span
+                                  className={`font-semibold ${l.direction === "CALL" ? "text-bull" : l.direction === "PUT" ? "text-bear" : ""}`}
+                                >
+                                  {l.direction}
+                                </span>
+                              )}
                               <span>{(l.confidence * 100).toFixed(0)}%</span>
-                              {l.entryPrice != null && <span className="numeric">@ {l.entryPrice.toFixed(4)}</span>}
+                              {l.entryPrice != null && (
+                                <span className="numeric">@ {l.entryPrice.toFixed(4)}</span>
+                              )}
                               {l.stake != null && <span>${l.stake.toFixed(2)}</span>}
                               {l.pnl != null && (
-                                <span className={`font-semibold ${l.pnl >= 0 ? "text-bull" : "text-bear"}`}>
+                                <span
+                                  className={`font-semibold ${l.pnl >= 0 ? "text-bull" : "text-bear"}`}
+                                >
                                   {l.pnl >= 0 ? "+" : ""}${l.pnl.toFixed(2)}
                                 </span>
                               )}
                             </div>
                             <div className="text-muted-foreground mt-0.5">{l.reasoning}</div>
-                            {l.riskCheck && <div className="text-[10px] text-muted-foreground/80 mt-0.5">{l.riskCheck}</div>}
+                            {l.riskCheck && (
+                              <div className="text-[10px] text-muted-foreground/80 mt-0.5">
+                                {l.riskCheck}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -681,8 +944,8 @@ const [form, setForm] = useState({
               <p>
                 <strong className="text-foreground">Bridge:</strong>{" "}
                 <code className="bg-card px-1 rounded">MT5_LIB_MODE=python-bridge</code> +{" "}
-                <code className="bg-card px-1 rounded">VITE_MT5_BRIDGE_URL</code> point to the FastAPI
-                bridge that connects to your MT5 terminal.
+                <code className="bg-card px-1 rounded">VITE_MT5_BRIDGE_URL</code> point to the
+                FastAPI bridge that connects to your MT5 terminal.
               </p>
             </div>
           </div>
@@ -692,20 +955,44 @@ const [form, setForm] = useState({
   );
 }
 
-function InfoBadge({ label, value, tone }: { label: string; value: string; tone?: "bull" | "bear" }) {
+function InfoBadge({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "bull" | "bear";
+}) {
   return (
     <div className="bg-card/50 rounded-lg px-3 py-2 border border-border/60">
       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
-      <p className={`text-sm font-semibold numeric mt-0.5 ${tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""}`}>{value}</p>
+      <p
+        className={`text-sm font-semibold numeric mt-0.5 ${tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""}`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
 
-function MetaCell({ label, value, tone }: { label: string; value: string; tone?: "bull" | "bear" }) {
+function MetaCell({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "bull" | "bear";
+}) {
   return (
     <div className="bg-card/30 rounded-md px-2.5 py-1.5 border border-border/40">
       <p className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</p>
-      <p className={`text-xs font-semibold numeric ${tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""}`}>{value}</p>
+      <p
+        className={`text-xs font-semibold numeric ${tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : ""}`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
@@ -720,7 +1007,9 @@ function ActionBadge({ action }: { action: string }) {
     PROTECTION: "bg-yellow-500/20 text-yellow-500",
   };
   return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${map[action] ?? "bg-muted"}`}>
+    <span
+      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${map[action] ?? "bg-muted"}`}
+    >
       {action}
     </span>
   );

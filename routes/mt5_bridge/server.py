@@ -447,6 +447,12 @@ async def history(from_date: int = 0, to_date: int = 0):
     return engine.history(from_date, to_date)
 
 
+@app.get("/history-orders")
+async def history_orders(from_date: int = 0, to_date: int = 0):
+    engine = _get_engine()
+    return engine.history_orders(from_date, to_date)
+
+
 # ── Orders (pending) ──
 
 @app.get("/orders")

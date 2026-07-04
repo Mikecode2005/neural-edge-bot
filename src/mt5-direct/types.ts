@@ -36,6 +36,81 @@ export interface Mt5Position {
   time: number;
 }
 
+export interface Mt5Deal {
+  ticket: number;
+  order?: number;
+  positionId?: number;
+  symbol: string;
+  type: number;
+  entry?: number;
+  volume: number;
+  price: number;
+  profit: number;
+  commission?: number;
+  swap?: number;
+  time: number;
+  comment: string;
+  magic: number;
+}
+
+export interface Mt5HistoryOrder {
+  ticket: number;
+  positionId?: number;
+  symbol: string;
+  type: number;
+  state?: number;
+  volumeInitial?: number;
+  volumeCurrent?: number;
+  priceOpen?: number;
+  priceCurrent?: number;
+  sl?: number;
+  tp?: number;
+  timeSetup?: number;
+  timeDone?: number;
+  comment?: string;
+  magic?: number;
+}
+
+export interface Mt5TradeAudit {
+  positionId: number;
+  symbol: string;
+  type: "BUY" | "SELL";
+  volume: number;
+  entryPrice: number;
+  exitPrice: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  actualRisk: number | null;
+  actualReward: number | null;
+  riskRewardRatio: number | null;
+  mfe: number | null;
+  mae: number | null;
+  durationSeconds: number;
+  exitReason: string;
+  profit: number;
+  diagnosis: string[];
+}
+
+export interface Mt5PerformanceReport {
+  source: "mt5";
+  account: Mt5AccountInfo;
+  openPositions: Mt5Position[];
+  trades: Mt5TradeAudit[];
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  netProfit: number;
+  profitFactor: number | null;
+  averageWin: number;
+  averageLoss: number;
+  expectancy: number;
+  drawdown: number;
+  averageHoldingSeconds: number;
+  largestWin: number;
+  largestLoss: number;
+}
+
 export interface Mt5OrderRequest {
   symbol: string;
   type: "buy" | "sell";
@@ -115,5 +190,5 @@ export interface Mt5Bot {
 export interface Mt5BotActivityEntry {
   timestamp: number;
   action: string;
-  details?: any;
+  details?: unknown;
 }

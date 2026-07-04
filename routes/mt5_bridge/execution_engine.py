@@ -269,15 +269,50 @@ class MT5ExecutionEngine:
             return []
         return [{
             "ticket": d.ticket,
+            "order": getattr(d, "order", 0),
+            "positionId": getattr(d, "position_id", 0),
             "symbol": d.symbol,
             "type": d.type,
+            "entry": getattr(d, "entry", 0),
             "volume": d.volume,
             "price": d.price,
             "profit": d.profit,
+            "commission": getattr(d, "commission", 0.0),
+            "swap": getattr(d, "swap", 0.0),
             "time": int(d.time),
             "comment": d.comment,
             "magic": d.magic,
         } for d in deals]
+
+    def history_orders(self, from_date: int = 0, to_date: int = 0) -> list[dict[str, Any]]:
+        """Get historical orders with SL/TP metadata for post-trade audits."""
+        if not self._initialized:
+            return []
+        mt5 = self._mt5
+        if from_date == 0:
+            from_date = int(time.time()) - 86400 * 7
+        if to_date == 0:
+            to_date = int(time.time())
+        orders = mt5.history_orders_get(from_date, to_date)
+        if orders is None:
+            return []
+        return [{
+            "ticket": o.ticket,
+            "positionId": getattr(o, "position_id", 0),
+            "symbol": o.symbol,
+            "type": o.type,
+            "state": getattr(o, "state", 0),
+            "volumeInitial": getattr(o, "volume_initial", 0.0),
+            "volumeCurrent": getattr(o, "volume_current", 0.0),
+            "priceOpen": getattr(o, "price_open", 0.0),
+            "priceCurrent": getattr(o, "price_current", 0.0),
+            "sl": getattr(o, "sl", 0.0),
+            "tp": getattr(o, "tp", 0.0),
+            "timeSetup": int(getattr(o, "time_setup", 0)),
+            "timeDone": int(getattr(o, "time_done", 0)),
+            "comment": getattr(o, "comment", ""),
+            "magic": getattr(o, "magic", 0),
+        } for o in orders]
 
     # ── Orders (pending) ──
 
