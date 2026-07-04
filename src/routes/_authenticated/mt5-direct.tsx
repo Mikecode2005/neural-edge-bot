@@ -141,6 +141,25 @@ const MT5_SYMBOLS = [
   "Boom 1000 Index",
 ];
 
+// Rough per-trade $ risk estimate: lots × pipValue × pipsOfSL. We assume 1.5×ATR SL and use
+// conservative pip-value defaults per symbol family (real value comes from MT5 broker at fill).
+function estimateRisk(lots: number, symbol: string): string {
+  const s = symbol.toLowerCase();
+  const isJpy = s.includes("jpy");
+  const isGold = s.includes("xau");
+  const isBtc = s.includes("btc");
+  const isVol = s.includes("volatility") || s.includes("crash") || s.includes("boom");
+  // pip $ per 1.0 lot approximations
+  let pipValue = 10;      // majors
+  let assumedPips = 20;   // 1.5*ATR ≈ 20 pips on 1m majors
+  if (isJpy) { pipValue = 9; assumedPips = 20; }
+  if (isGold) { pipValue = 10; assumedPips = 30; }
+  if (isBtc) { pipValue = 1; assumedPips = 200; }
+  if (isVol) { pipValue = 1; assumedPips = 40; }
+  const risk = lots * pipValue * assumedPips;
+  return `$${risk.toFixed(2)}`;
+}
+
 function Mt5DirectPage() {
   const fnConnect = useServerFn(mt5Connect);
   const fnDisconnect = useServerFn(mt5Disconnect);
