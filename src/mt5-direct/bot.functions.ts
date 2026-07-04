@@ -412,6 +412,17 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       }
     }
 
+    // Refresh bot after settlements to compute available balance
+    const { data: botFresh } = await supabaseAdmin
+      .from("bot_runs")
+      .select("*")
+      .eq("id", data.id)
+      .maybeSingle();
+    const balance = Number((botFresh as any)?.account_balance ?? 1000);
+    const totalPnl = Number((botFresh as any)?.total_pnl ?? 0);
+    const locked = Number((botFresh as any)?.locked_stake ?? 0);
+    const available = balance + totalPnl - locked;
+
     // Compute consecutive losses from the last 10 EXIT rows (loss-streak brake)
     const { data: recentExits } = await supabaseAdmin
       .from("bot_activity")
