@@ -533,11 +533,12 @@ export function analyzeMomentum(candles: Candle[]): LiveAnalysis {
 // ── Multi-strategy dispatcher ───────────────────────────────────────────
 
 export function analyzeMulti(candles: Candle[]): LiveAnalysis {
-  const results = [analyze(candles), analyzeMomentum(candles), analyzeMeanReversion(candles)];
-  const tradable = results.filter((r) => r.decision !== "WAIT");
-  if (tradable.length === 0) {
-    // Return the one with highest confidence to still surface diagnostics
-    return results.sort((a, b) => b.confidence - a.confidence)[0];
-  }
-  return tradable.sort((a, b) => b.confidence - a.confidence)[0];
+  // Delegates to the confluence ensemble (regime-aware, 11-strategy scorer).
+  // Kept as a wrapper so all existing callers (bots, MT5, Qwen) benefit
+  // without changing their imports.
+  // Import lazily to avoid circular dep at module init.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { analyzeEnsemble } = require("./strategies/confluence") as typeof import("./strategies/confluence");
+  return analyzeEnsemble(candles, 70);
 }
+
