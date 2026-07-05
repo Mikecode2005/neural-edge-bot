@@ -86,6 +86,13 @@ export interface LiveAnalysis {
   bollUpper?: number;
   bollLower?: number;
   bollMid?: number;
+  // Multi-strategy confluence extensions
+  regime?: MarketRegime;
+  confluenceScore?: number;
+  scoreBreakdown?: ConfluenceContribution[];
+  // TP1 partial (1R) — used by newer risk manager
+  tp1?: number;
+  tp2?: number;
 }
 
 // ── indicators ──────────────────────────────────────────────────────────
