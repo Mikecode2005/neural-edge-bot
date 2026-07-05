@@ -7,6 +7,7 @@ const items = [
   { to: "/dashboard", label: "Dashboard" },
   { to: "/bots", label: "Bots" },
   { to: "/backtest", label: "Backtest" },
+  { to: "/strategy-lab", label: "Strategy Lab" },
   { to: "/mt5-direct", label: "MT5 Direct" },
   { to: "/memory", label: "Memory" },
   { to: "/chat", label: "Chat" },
