@@ -15,8 +15,28 @@
  * confidence tradable signal with a `strategy` tag.
  */
 import type { Candle } from "./deriv-ws";
+import { analyzeEnsemble } from "./strategies/confluence";
 
-export type StrategyKind = "ob-fvg" | "mean-reversion" | "momentum";
+export type StrategyKind =
+  | "ob-fvg"
+  | "mean-reversion"
+  | "momentum"
+  | "msnr-crt"
+  | "apa"
+  | "liquidity-sweep"
+  | "vol-expansion"
+  | "wyckoff"
+  | "ote"
+  | "fractal"
+  | "dynamic-sr"
+  | "bb-rsi";
+
+export type MarketRegime = "trend_up" | "trend_down" | "range" | "compression" | "reversal";
+
+export interface ConfluenceContribution {
+  label: string;
+  points: number;
+}
 
 export interface FVG {
   kind: "bullish" | "bearish";
@@ -67,6 +87,13 @@ export interface LiveAnalysis {
   bollUpper?: number;
   bollLower?: number;
   bollMid?: number;
+  // Multi-strategy confluence extensions
+  regime?: MarketRegime;
+  confluenceScore?: number;
+  scoreBreakdown?: ConfluenceContribution[];
+  // TP1 partial (1R) — used by newer risk manager
+  tp1?: number;
+  tp2?: number;
 }
 
 // ── indicators ──────────────────────────────────────────────────────────
@@ -507,11 +534,8 @@ export function analyzeMomentum(candles: Candle[]): LiveAnalysis {
 // ── Multi-strategy dispatcher ───────────────────────────────────────────
 
 export function analyzeMulti(candles: Candle[]): LiveAnalysis {
-  const results = [analyze(candles), analyzeMomentum(candles), analyzeMeanReversion(candles)];
-  const tradable = results.filter((r) => r.decision !== "WAIT");
-  if (tradable.length === 0) {
-    // Return the one with highest confidence to still surface diagnostics
-    return results.sort((a, b) => b.confidence - a.confidence)[0];
-  }
-  return tradable.sort((a, b) => b.confidence - a.confidence)[0];
+  // Delegates to the regime-aware confluence ensemble (11 strategies).
+  return analyzeEnsemble(candles, 70);
 }
+
+

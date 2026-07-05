@@ -226,6 +226,7 @@ export type Database = {
           action: string
           bot_run_id: string
           confidence: number | null
+          confluence_score: number | null
           created_at: string
           direction: string | null
           entry_price: number | null
@@ -235,9 +236,12 @@ export type Database = {
           ob_zone: string | null
           pnl: number | null
           reasoning: string
+          regime: string | null
           risk_check: string | null
+          score_breakdown: Json | null
           stake: number | null
           stop_loss: number | null
+          strategy: string | null
           symbol: string
           take_profit: number | null
           user_id: string
@@ -246,6 +250,7 @@ export type Database = {
           action: string
           bot_run_id: string
           confidence?: number | null
+          confluence_score?: number | null
           created_at?: string
           direction?: string | null
           entry_price?: number | null
@@ -255,9 +260,12 @@ export type Database = {
           ob_zone?: string | null
           pnl?: number | null
           reasoning: string
+          regime?: string | null
           risk_check?: string | null
+          score_breakdown?: Json | null
           stake?: number | null
           stop_loss?: number | null
+          strategy?: string | null
           symbol: string
           take_profit?: number | null
           user_id: string
@@ -266,6 +274,7 @@ export type Database = {
           action?: string
           bot_run_id?: string
           confidence?: number | null
+          confluence_score?: number | null
           created_at?: string
           direction?: string | null
           entry_price?: number | null
@@ -275,9 +284,12 @@ export type Database = {
           ob_zone?: string | null
           pnl?: number | null
           reasoning?: string
+          regime?: string | null
           risk_check?: string | null
+          score_breakdown?: Json | null
           stake?: number | null
           stop_loss?: number | null
+          strategy?: string | null
           symbol?: string
           take_profit?: number | null
           user_id?: string
@@ -298,6 +310,7 @@ export type Database = {
           ai_decision_id: string | null
           bot_run_id: string
           closed_at: string | null
+          confluence_score: number | null
           created_at: string
           current_price: number | null
           direction: string
@@ -316,9 +329,11 @@ export type Database = {
           payout: number
           pnl: number
           reasoning: string | null
+          regime: string | null
           stake: number
           status: string
           stop_loss: number | null
+          strategy: string | null
           symbol: string
           take_profit: number | null
           trade_history_id: string | null
@@ -330,6 +345,7 @@ export type Database = {
           ai_decision_id?: string | null
           bot_run_id: string
           closed_at?: string | null
+          confluence_score?: number | null
           created_at?: string
           current_price?: number | null
           direction: string
@@ -348,9 +364,11 @@ export type Database = {
           payout?: number
           pnl?: number
           reasoning?: string | null
+          regime?: string | null
           stake: number
           status?: string
           stop_loss?: number | null
+          strategy?: string | null
           symbol: string
           take_profit?: number | null
           trade_history_id?: string | null
@@ -362,6 +380,7 @@ export type Database = {
           ai_decision_id?: string | null
           bot_run_id?: string
           closed_at?: string | null
+          confluence_score?: number | null
           created_at?: string
           current_price?: number | null
           direction?: string
@@ -380,9 +399,11 @@ export type Database = {
           payout?: number
           pnl?: number
           reasoning?: string | null
+          regime?: string | null
           stake?: number
           status?: string
           stop_loss?: number | null
+          strategy?: string | null
           symbol?: string
           take_profit?: number | null
           trade_history_id?: string | null
@@ -1460,6 +1481,28 @@ export type Database = {
             columns: ["prediction_id"]
             isOneToOne: false
             referencedRelation: "predictions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      strategy_performance: {
+        Row: {
+          avg_pnl: number | null
+          bot_run_id: string | null
+          losses: number | null
+          net_pnl: number | null
+          strategy: string | null
+          trades: number | null
+          user_id: string | null
+          win_rate: number | null
+          wins: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_positions_bot_run_id_fkey"
+            columns: ["bot_run_id"]
+            isOneToOne: false
+            referencedRelation: "bot_runs"
             referencedColumns: ["id"]
           },
         ]

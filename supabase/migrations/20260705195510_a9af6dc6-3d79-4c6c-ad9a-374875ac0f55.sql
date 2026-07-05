@@ -1,0 +1,1 @@
+ALTER VIEW public.strategy_performance SET (security_invoker = on);
