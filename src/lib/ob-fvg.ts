@@ -534,12 +534,8 @@ export function analyzeMomentum(candles: Candle[]): LiveAnalysis {
 // ── Multi-strategy dispatcher ───────────────────────────────────────────
 
 export function analyzeMulti(candles: Candle[]): LiveAnalysis {
-  // Delegates to the confluence ensemble (regime-aware, 11-strategy scorer).
-  // Kept as a wrapper so all existing callers (bots, MT5, Qwen) benefit
-  // without changing their imports.
-  // Import lazily to avoid circular dep at module init.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { analyzeEnsemble } = require("./strategies/confluence") as typeof import("./strategies/confluence");
+  // Delegates to the regime-aware confluence ensemble (11 strategies).
   return analyzeEnsemble(candles, 70);
 }
+
 
