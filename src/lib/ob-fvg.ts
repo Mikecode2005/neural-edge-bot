@@ -15,6 +15,7 @@
  * confidence tradable signal with a `strategy` tag.
  */
 import type { Candle } from "./deriv-ws";
+import { analyzeEnsemble } from "./strategies/confluence";
 
 export type StrategyKind =
   | "ob-fvg"
