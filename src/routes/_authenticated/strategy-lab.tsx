@@ -76,7 +76,7 @@ function StrategyLabPage() {
               <Label className="text-xs">Symbol</Label>
               <select className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm"
                 value={symbol} onChange={e => setSymbol(e.target.value)}>
-                {DERIV_SYMBOLS.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
+                {DERIV_SYMBOLS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
               </select>
             </div>
             <div>
