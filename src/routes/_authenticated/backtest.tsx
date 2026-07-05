@@ -47,9 +47,10 @@ import { Badge } from "@/components/ui/badge";
 import { Toaster } from "@/components/ui/sonner";
 
 import { getDerivWS } from "@/lib/deriv/ws";
-import { analyze } from "@/lib/ob-fvg";
+import { analyze, analyzeMulti, type StrategyKind } from "@/lib/ob-fvg";
 import { DERIV_SYMBOLS } from "@/lib/deriv-ws";
 import { saveBacktest, listBacktests } from "@/lib/backtest/backtest.functions";
+import { STRATEGY_CATALOG, validateStrategyCombination, getStrategyLabel } from "@/lib/strategies/catalog";
 
 export const Route = createFileRoute("/_authenticated/backtest")({
   head: () => ({ meta: [{ title: "Backtest — AI Trading" }] }),
@@ -155,6 +156,29 @@ function BacktestPage() {
 
   // NEW: Strategy mode toggle & risk settings
   const [strategyMode, setStrategyMode] = useState<"strategy" | "qwen">("strategy");
+
+  // NEW: Strategy selection for multi-strategy backtest
+  const [selectedStrategies, setSelectedStrategies] = useState<StrategyKind[]>([]);
+
+  const toggleStrategy = (strat: StrategyKind) => {
+    setSelectedStrategies((prev) => {
+      // If already selected, remove it
+      if (prev.includes(strat)) {
+        return prev.filter((s) => s !== strat);
+      }
+      // If not selected and we have less than 3, add it
+      if (prev.length < 3) {
+        return [...prev, strat];
+      }
+      // If trying to add more than 3, replace first selection
+      toast.info("Maximum 3 strategies can be combined. Replacing first selection.");
+      return [prev[1], prev[2], strat];
+    });
+  };
+
+  const clearStrategies = () => {
+    setSelectedStrategies([]);
+  };
   const [riskMode, setRiskMode] = useState<"fixed" | "dynamic_pct" | "dynamic_kelly">("fixed");
   const [riskPerTrade, setRiskPerTrade] = useState(0.02); // 2% risk per trade
   const [maxStakePct, setMaxStakePct] = useState(0.10); // max 10% of balance

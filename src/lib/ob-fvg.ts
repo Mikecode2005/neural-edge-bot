@@ -533,9 +533,10 @@ export function analyzeMomentum(candles: Candle[]): LiveAnalysis {
 
 // ── Multi-strategy dispatcher ───────────────────────────────────────────
 
-export function analyzeMulti(candles: Candle[]): LiveAnalysis {
+export function analyzeMulti(candles: Candle[], selectedStrategies?: StrategyKind[]): LiveAnalysis {
   // Delegates to the regime-aware confluence ensemble (11 strategies).
-  return analyzeEnsemble(candles, 70);
+  return analyzeEnsemble(candles, 70, selectedStrategies);
 }
+
 
 

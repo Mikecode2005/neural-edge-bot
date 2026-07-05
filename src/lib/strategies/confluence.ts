@@ -20,6 +20,7 @@
  * The scorer requires ≥70 base score + regime match to trigger a trade.
  */
 import type { Candle } from "../deriv-ws";
+import { DEFAULT_STRATEGY_SELECTION, normalizeStrategySelection } from "./catalog";
 import {
   analyze,
   analyzeMomentum,
@@ -177,9 +178,6 @@ function sigLiquiditySweep(candles: Candle[], base: LiveAnalysis, price: number)
 
 // 4. OB + FVG — use existing analyze() output
 function sigObFvg(base: LiveAnalysis): StratSignal {
-  if (base.strategy !== "ob-fvg") {
-    // called from ensemble; treat provided base as ob-fvg analysis
-  }
   if (base.decision === "WAIT") return { strategy: "ob-fvg", dir: "WAIT", base: 0, reason: "OB+FVG: " + (base.rationale || "gates failed") };
   return {
     strategy: "ob-fvg",
@@ -307,6 +305,113 @@ function sigBbRsi(mr: LiveAnalysis): StratSignal {
   };
 }
 
+// ── Checkmate/Alignment logic for strategy combinations ─────────────────
+// When combining strategies, they must "checkmate" each other meaning:
+// - Both strategies agree on direction (BUY/SELL)
+// - Both strategies' entry zones overlap or are very close
+// - The confluence provides a stronger signal than individual confidence
+export interface CheckmateAnalysis {
+  aligned: boolean;
+  consensusDirection: "BUY" | "SELL" | "WAIT";
+  zoneOverlap: number; // 0-1 scale
+  combinedStrength: number; // 0-1 scale
+  reasons: string[];
+}
+
+/**
+ * Analyze how well multiple strategies align/checkmate each other.
+ * For 1-3 strategy combos, this ensures proper confluence before trading.
+ */
+export function checkStrategyAlignment(
+  signals: StratSignal[],
+  strategies: StrategyKind[]
+): CheckmateAnalysis {
+  const relevant = signals.filter((s) => strategies.includes(s.strategy));
+  const reasons: string[] = [];
+
+  if (relevant.length === 0) {
+    return { aligned: false, consensusDirection: "WAIT", zoneOverlap: 0, combinedStrength: 0, reasons: ["No relevant signals found"] };
+  }
+
+  // Single strategy case - check if it has a valid signal
+  if (relevant.length === 1) {
+    const s = relevant[0];
+    return {
+      aligned: s.dir !== "WAIT",
+      consensusDirection: s.dir,
+      zoneOverlap: 1,
+      combinedStrength: s.dir !== "WAIT" ? s.base / 60 : 0,
+      reasons: [s.reason],
+    };
+  }
+
+  // Multiple strategy checkmate - all must agree on direction
+  const directions = relevant.map(s => s.dir).filter(d => d !== "WAIT");
+  if (directions.length !== relevant.length) {
+    return {
+      aligned: false,
+      consensusDirection: "WAIT",
+      zoneOverlap: 0,
+      combinedStrength: Math.max(...relevant.map(s => s.base)) / 60,
+      reasons: relevant.filter(s => s.dir === "WAIT").map((s) => s.reason),
+    };
+  }
+
+  // Check all signals have same direction
+  const firstDir = directions[0];
+  const allMatch = directions.every(d => d === firstDir);
+  if (!allMatch) {
+    const conflicts = relevant.filter(s => s.dir !== firstDir).map(s => `${s.strategy}=${s.dir}`);
+    reasons.push(`Direction conflicts: ${conflicts.join(", ")}`);
+    return {
+      aligned: false,
+      consensusDirection: "WAIT",
+      zoneOverlap: 0,
+      combinedStrength: 0,
+      reasons,
+    };
+  }
+
+  // Calculate zone overlap for entry zones
+  const zoneOverlapRatios: number[] = [];
+  for (let i = 0; i < relevant.length; i++) {
+    for (let j = i + 1; j < relevant.length; j++) {
+      const s1 = relevant[i];
+      const s2 = relevant[j];
+      if (s1.entry && s2.entry && s1.sl && s2.sl) {
+        const zone1Low = s1.entry - 0.5 * Math.abs(s1.entry - s1.sl);
+        const zone1High = s1.entry + 0.5 * Math.abs(s1.entry - s1.sl);
+        const zone2Low = s2.entry - 0.5 * Math.abs(s2.entry - s2.sl);
+        const zone2High = s2.entry + 0.5 * Math.abs(s2.entry - s2.sl);
+        const overlap = Math.max(0, Math.min(zone1High, zone2High) - Math.max(zone1Low, zone2Low));
+        const overlapRatio = overlap / (Math.abs(s1.entry - s2.entry) + 0.0001);
+        zoneOverlapRatios.push(Math.min(1, overlapRatio));
+      }
+    }
+  }
+  const avgZoneOverlap = zoneOverlapRatios.length > 0 
+    ? zoneOverlapRatios.reduce((a, b) => a + b, 0) / zoneOverlapRatios.length 
+    : 1;
+
+  // Combined strength - average of all signals plus alignment bonus
+  const strengths = relevant.map(s => s.base / 60);
+  const avgStrength = strengths.reduce((a, b) => a + b, 0) / strengths.length;
+  const alignmentBonus = avgZoneOverlap * 0.5;
+  const combinedStrength = Math.min(1, avgStrength + alignmentBonus);
+
+  reasons.push(`Checkmate achieved: ${strategies.join(" + ")} all ${firstDir}`);
+  reasons.push(`Zone overlap: ${(avgZoneOverlap * 100).toFixed(0)}%`);
+  reasons.push(`Combined strength: ${(combinedStrength * 100).toFixed(0)}%`);
+
+  return {
+    aligned: true,
+    consensusDirection: firstDir,
+    zoneOverlap: avgZoneOverlap,
+    combinedStrength,
+    reasons,
+  };
+}
+
 // ── Regime → allowed strategies ───────────────────────────────────────
 const REGIME_ALLOW: Record<MarketRegime, StrategyKind[]> = {
   trend_up:    ["msnr-crt", "apa", "momentum", "ob-fvg", "ote", "fractal", "dynamic-sr", "vol-expansion"] as StrategyKind[],
@@ -329,7 +434,11 @@ export interface EnsembleResult extends LiveAnalysis {
  * breakdown. If no signal ≥ minScore, returns WAIT with the highest scoring
  * candidate for diagnostics.
  */
-export function analyzeEnsemble(candles: Candle[], minScore = 70): EnsembleResult {
+export function analyzeEnsemble(
+  candles: Candle[],
+  minScore = 70,
+  selectedStrategies: StrategyKind[] = DEFAULT_STRATEGY_SELECTION,
+): EnsembleResult {
   const window = candles.slice(-200);
   const price = window.at(-1)?.close ?? 0;
   const obFvg = analyze(window);
@@ -363,13 +472,66 @@ export function analyzeEnsemble(candles: Candle[], minScore = 70): EnsembleResul
     });
   }
 
-  const allowed = REGIME_ALLOW[regime.regime];
+  const selected = normalizeStrategySelection(selectedStrategies);
+  const allowed = REGIME_ALLOW[regime.regime].filter((strategy) => selected.includes(strategy));
+
+  // For strategy combinations (1-3 strategies), use checkmate/alignment logic
+  if (selected.length >= 1 && selected.length <= 3) {
+    const aligned = checkStrategyAlignment(signals, selected);
+    if (!aligned.aligned || aligned.consensusDirection === "WAIT") {
+      return {
+        ...obFvg,
+        regime: regime.regime,
+        confluenceScore: Math.round(aligned.combinedStrength * 100),
+        scoreBreakdown: aligned.reasons.map((r) => ({ label: r, points: 0 })),
+        strategy: selected[0] ?? "ob-fvg",
+        decision: "WAIT",
+        confidence: aligned.combinedStrength,
+        rationale: `[${regime.regime}] ${aligned.reasons.join(" | ") || "No checkmate alignment"}`,
+      };
+    }
+
+    // Find the best signal among the selected strategies for entry/SL/TP
+    const primarySig = signals.find((s) => s.strategy === selected[0] && s.dir === aligned.consensusDirection);
+    if (primarySig) {
+      const isBuy = aligned.consensusDirection === "BUY";
+      const entry = primarySig.entry ?? price;
+      const sl = primarySig.sl ?? (isBuy ? entry - 1.5 * obFvg.atr14 : entry + 1.5 * obFvg.atr14);
+      const tp = primarySig.tp ?? (isBuy ? entry + 2.5 * obFvg.atr14 : entry - 2.5 * obFvg.atr14);
+      const risk = Math.abs(entry - sl) || obFvg.atr14;
+      const tp1 = isBuy ? entry + risk : entry - risk;
+
+      // Build score breakdown based on number of strategies
+      const breakdown: ConfluenceContribution[] = [
+        { label: `${selected[0]} primary`, points: Math.round(aligned.combinedStrength * 60) },
+      ];
+      if (selected.length > 1) {
+        breakdown.push({ label: `${selected[1]} aligned`, points: Math.round(aligned.zoneOverlap * 40) });
+      }
+      if (selected.length > 2) {
+        breakdown.push({ label: `${selected[2]} triple confirmation`, points: Math.round(aligned.zoneOverlap * 30) });
+      }
+
+      return {
+        ...obFvg,
+        regime: regime.regime,
+        confluenceScore: Math.max(70, Math.round(aligned.combinedStrength * 100 + 20)),
+        scoreBreakdown: breakdown,
+        strategy: selected[0],
+        decision: aligned.consensusDirection,
+        confidence: Math.min(0.98, aligned.combinedStrength + 0.1),
+        entry, sl, tp,
+        tp1, tp2: tp,
+        rationale: `[${regime.regime} · ${selected.join(" + ")}] Checkmate: ${aligned.reasons.join(". ")}. RR ${(Math.abs(tp - entry) / risk).toFixed(2)}`,
+      };
+    }
+  }
 
   // Score each active signal by aggregating its base + confluence from OTHER active signals in same direction
   let best: { sig: StratSignal; score: number; breakdown: ConfluenceContribution[] } | null = null;
   for (const s of signals) {
     if (s.dir === "WAIT") continue;
-    if (!allowed.includes(s.strategy)) continue;
+    if (!selected.includes(s.strategy) || !allowed.includes(s.strategy)) continue;
 
     const breakdown: ConfluenceContribution[] = [
       { label: `${s.strategy} base`, points: s.base },
@@ -423,7 +585,7 @@ export function analyzeEnsemble(candles: Candle[], minScore = 70): EnsembleResul
       ...base,
       decision: "WAIT",
       confidence: Math.max(0.1, (best?.score ?? 0) / 100),
-      rationale: `[${regime.regime}] Best: ${best?.sig.strategy ?? "none"} score ${(best?.score ?? 0).toFixed(0)} < ${minScore}. ${best?.sig.reason ?? "No signal"}`,
+      rationale: `[${regime.regime}] Selected: ${selected.join("+")}. Best: ${best?.sig.strategy ?? "none"} score ${(best?.score ?? 0).toFixed(0)} < ${minScore}. ${best?.sig.reason ?? "No signal"}`,
     };
   }
 

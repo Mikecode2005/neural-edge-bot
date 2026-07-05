@@ -83,10 +83,11 @@ export function makeObFvgBotDecision(
     maxStake: number;
     consecutiveLosses?: number;
     useMultiStrategy?: boolean;
+    selectedStrategies?: StrategyKind[];
   },
 ): BotDecision {
   const window = candles.slice(-200);
-  const analysis = opts.useMultiStrategy === false ? analyze(window) : analyzeMulti(window);
+  const analysis = opts.useMultiStrategy === false ? analyze(window) : analyzeMulti(window, opts.selectedStrategies);
   const last = window.at(-1);
   const obZone = formatObZone(analysis);
   const fvgZone = formatFvgZone(analysis);

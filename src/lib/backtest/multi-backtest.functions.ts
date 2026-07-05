@@ -25,6 +25,7 @@ const RunInput = z.object({
   minScore: z.number().default(70),
   riskPerTrade: z.number().default(1), // 1R units
   maxHold: z.number().default(20),
+  selectedStrategies: z.array(z.string()).optional(),
 });
 
 interface SimTrade {
@@ -47,7 +48,9 @@ export const runMultiBacktest = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => RunInput.parse(d))
   .handler(async ({ data }) => {
     const { analyzeEnsemble } = await import("../strategies/confluence");
+    const { normalizeStrategySelection } = await import("../strategies/catalog");
     const candles = data.candles;
+    const selectedStrategies = normalizeStrategySelection(data.selectedStrategies);
     const trades: SimTrade[] = [];
     const equity: { t: number; equity: number }[] = [{ t: candles[0].epoch, equity: 0 }];
     let equityR = 0;
@@ -97,7 +100,7 @@ export const runMultiBacktest = createServerFn({ method: "POST" })
       // Open new
       if (!open) {
         const window = candles.slice(Math.max(0, i - 199), i + 1);
-        const a = analyzeEnsemble(window, data.minScore);
+        const a = analyzeEnsemble(window, data.minScore, selectedStrategies);
         if (a.decision !== "WAIT" && a.entry && a.sl && a.tp) {
           open = {
             strategy: a.strategy ?? "ob-fvg",
@@ -149,5 +152,6 @@ export const runMultiBacktest = createServerFn({ method: "POST" })
       byStrategy,
       equity,
       trades: trades.slice(-500), // cap for wire
+      selectedStrategies,
     };
   });
