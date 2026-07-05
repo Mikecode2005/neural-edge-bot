@@ -234,13 +234,13 @@ function sigWyckoff(candles: Candle[], base: LiveAnalysis, price: number): Strat
 function sigEmaPullback(base: LiveAnalysis, price: number): StratSignal {
   const stackedUp = base.ema20 > base.ema50 && base.ema50 > base.ema200;
   const stackedDn = base.ema20 < base.ema50 && base.ema50 < base.ema200;
-  if (!stackedUp && !stackedDn) return { strategy: "ema-pullback" as StrategyKind, dir: "WAIT", base: 0, reason: "EMA not stacked" };
+  if (!stackedUp && !stackedDn) return { strategy: "momentum", dir: "WAIT", base: 0, reason: "EMA not stacked" };
   const nearEma20 = Math.abs(price - base.ema20) <= 0.6 * base.atr14;
-  if (!nearEma20) return { strategy: "ema-pullback" as StrategyKind, dir: "WAIT", base: 0, reason: "No pullback to EMA20" };
-  if (base.adx14 < 22) return { strategy: "ema-pullback" as StrategyKind, dir: "WAIT", base: 0, reason: "ADX too low" };
+  if (!nearEma20) return { strategy: "momentum", dir: "WAIT", base: 0, reason: "No pullback to EMA20" };
+  if (base.adx14 < 22) return { strategy: "momentum", dir: "WAIT", base: 0, reason: "ADX too low" };
   const dir = stackedUp ? "BUY" : "SELL";
   return {
-    strategy: "ema-pullback" as StrategyKind, dir, base: 40,
+    strategy: "momentum", dir, base: 40,
     reason: "EMA pullback + stack + ADX",
     entry: price,
     sl: dir === "BUY" ? price - 1.5 * base.atr14 : price + 1.5 * base.atr14,
