@@ -29,7 +29,9 @@ export type StrategyKind =
   | "ote"
   | "fractal"
   | "dynamic-sr"
-  | "bb-rsi";
+  | "bb-rsi"
+  | "titan1"
+  | "titan2";
 
 export type MarketRegime = "trend_up" | "trend_down" | "range" | "compression" | "reversal";
 
@@ -116,10 +118,12 @@ function emaSeries(values: number[], period: number): number[] {
 
 function rsi(values: number[], period = 14): number {
   if (values.length < period + 1) return 50;
-  let gains = 0, losses = 0;
+  let gains = 0,
+    losses = 0;
   for (let i = values.length - period; i < values.length; i++) {
     const d = values[i] - values[i - 1];
-    if (d > 0) gains += d; else losses -= d;
+    if (d > 0) gains += d;
+    else losses -= d;
   }
   const rs = gains / (losses || 1e-9);
   return 100 - 100 / (1 + rs);
@@ -156,7 +160,9 @@ function atr(c: Candle[], period = 14): number {
 
 function calculateADX(c: Candle[], period = 14): number {
   if (c.length < period * 2) return 20;
-  const trs: number[] = [], plusDM: number[] = [], minusDM: number[] = [];
+  const trs: number[] = [],
+    plusDM: number[] = [],
+    minusDM: number[] = [];
   for (let i = 1; i < c.length; i++) {
     trs.push(
       Math.max(
@@ -205,16 +211,31 @@ export function detectFVGs(candles: Candle[], maxAge = 100): FVG[] {
     const prev = candles[i - 1];
     const next = candles[i + 1];
     if (prev.high < next.low) {
-      out.push({ kind: "bullish", bottom: prev.high, top: next.low, index: i, filled: false, size: next.low - prev.high });
+      out.push({
+        kind: "bullish",
+        bottom: prev.high,
+        top: next.low,
+        index: i,
+        filled: false,
+        size: next.low - prev.high,
+      });
     } else if (prev.low > next.high) {
-      out.push({ kind: "bearish", bottom: next.high, top: prev.low, index: i, filled: false, size: prev.low - next.high });
+      out.push({
+        kind: "bearish",
+        bottom: next.high,
+        top: prev.low,
+        index: i,
+        filled: false,
+        size: prev.low - next.high,
+      });
     }
   }
   for (const f of out) {
     const post = candles.slice(f.index + 1);
-    f.filled = f.kind === "bullish"
-      ? post.some((c) => c.low <= f.bottom)
-      : post.some((c) => c.high >= f.top);
+    f.filled =
+      f.kind === "bullish"
+        ? post.some((c) => c.low <= f.bottom)
+        : post.some((c) => c.high >= f.top);
   }
   return out;
 }
@@ -227,19 +248,26 @@ export function detectOBs(candles: Candle[], fvgs: FVG[]): OrderBlock[] {
     for (let j = f.index - 1; j >= Math.max(f.index - 10, 0); j--) {
       const c = candles[j];
       const isRed = c.close < c.open;
-      if ((wantRed && isRed) || (!wantRed && c.close > c.open)) { idx = j; break; }
+      if ((wantRed && isRed) || (!wantRed && c.close > c.open)) {
+        idx = j;
+        break;
+      }
     }
     if (idx < 0) continue;
     const c = candles[idx];
     const post = candles.slice(idx + 1);
-    const mitigated = f.kind === "bullish"
-      ? post.some((x) => x.low <= c.high) && post.some((x) => x.low <= c.low)
-      : post.some((x) => x.high >= c.low) && post.some((x) => x.high >= c.high);
+    const mitigated =
+      f.kind === "bullish"
+        ? post.some((x) => x.low <= c.high) && post.some((x) => x.low <= c.low)
+        : post.some((x) => x.high >= c.low) && post.some((x) => x.high >= c.high);
     obs.push({
       kind: f.kind,
-      top: c.high, bottom: c.low,
-      index: idx, fvgIndex: f.index,
-      mitigated, volumeProxy: c.high - c.low,
+      top: c.high,
+      bottom: c.low,
+      index: idx,
+      fvgIndex: f.index,
+      mitigated,
+      volumeProxy: c.high - c.low,
     });
   }
   return obs;
@@ -249,7 +277,8 @@ function detectSwings(candles: Candle[], left = 3, right = 3) {
   const highs: { val: number; idx: number }[] = [];
   const lows: { val: number; idx: number }[] = [];
   for (let i = left; i < candles.length - right; i++) {
-    let sh = true, sl = true;
+    let sh = true,
+      sl = true;
     for (let j = 1; j <= left; j++) {
       if (candles[i - j].high >= candles[i].high) sh = false;
       if (candles[i - j].low <= candles[i].low) sl = false;
@@ -269,8 +298,8 @@ function detectSwings(candles: Candle[], left = 3, right = 3) {
 function volatilityBounds(atr14: number, price: number): "normal" | "low" | "high" {
   // Normalize ATR as % of price so it works across FX, gold, indices, and vol-1s.
   const pct = price > 0 ? (atr14 / price) * 100 : 0;
-  if (pct < 0.02) return "low";      // truly dead market
-  if (pct > 2.5) return "high";      // hyper-volatile — spreads eat SL
+  if (pct < 0.02) return "low"; // truly dead market
+  if (pct > 2.5) return "high"; // hyper-volatile — spreads eat SL
   return "normal";
 }
 
@@ -297,7 +326,8 @@ export function analyze(candles: Candle[]): LiveAnalysis {
   const closes5 = c5.map((c) => c.close);
   const closes15 = c15.map((c) => c.close);
   const htfTrend15m: "up" | "down" = ema(closes15, 20) > ema(closes15, 50) ? "up" : "down";
-  const htfStructure5m: "bullish" | "bearish" = ema(closes5, 20) > ema(closes5, 50) ? "bullish" : "bearish";
+  const htfStructure5m: "bullish" | "bearish" =
+    ema(closes5, 20) > ema(closes5, 50) ? "bullish" : "bearish";
 
   // Structure
   const { highs: sHi, lows: sLo } = detectSwings(candles, 5, 5);
@@ -307,17 +337,26 @@ export function analyze(candles: Candle[]): LiveAnalysis {
   if (recentHi.some((h) => last.high > h.val && lastPrice <= h.val)) liquiditySweep = true;
   if (recentLo.some((l) => last.low < l.val && lastPrice >= l.val)) liquiditySweep = true;
 
-  let bos = false, choch = false;
+  let bos = false,
+    choch = false;
   const prevHigh = recentHi.at(-1)?.val ?? null;
   const prevLow = recentLo.at(-1)?.val ?? null;
-  if (prevHigh && lastPrice > prevHigh) { bos = trend === "up"; choch = trend === "down"; }
-  else if (prevLow && lastPrice < prevLow) { bos = trend === "down"; choch = trend === "up"; }
+  if (prevHigh && lastPrice > prevHigh) {
+    bos = trend === "up";
+    choch = trend === "down";
+  } else if (prevLow && lastPrice < prevLow) {
+    bos = trend === "down";
+    choch = trend === "up";
+  }
 
   // Displacement — check last 5 candles, not just latest
   let displacement = false;
   for (const c of candles.slice(-5)) {
     const rng = c.high - c.low || 1e-9;
-    if (Math.abs(c.close - c.open) / rng > 0.55) { displacement = true; break; }
+    if (Math.abs(c.close - c.open) / rng > 0.55) {
+      displacement = true;
+      break;
+    }
   }
 
   const fvgs = detectFVGs(candles);
@@ -331,18 +370,39 @@ export function analyze(candles: Candle[]): LiveAnalysis {
     if (!f || f.filled || ob.mitigated) continue;
     // require price INSIDE or within 0.5 ATR of the OB — retracement, not proximity
     const insideOB = lastPrice >= ob.bottom && lastPrice <= ob.top;
-    const nearOB = Math.min(Math.abs(lastPrice - ob.top), Math.abs(lastPrice - ob.bottom)) <= 0.5 * atr14;
+    const nearOB =
+      Math.min(Math.abs(lastPrice - ob.top), Math.abs(lastPrice - ob.bottom)) <= 0.5 * atr14;
     if (!insideOB && !nearOB) continue;
-    activeOB = ob; activeFVG = f; break;
+    activeOB = ob;
+    activeFVG = f;
+    break;
   }
 
   const base: LiveAnalysis = {
-    fvgs, obs, activeOB, activeFVG,
-    decision: "WAIT", confidence: 0.15, rationale: "",
-    trend, ema20, ema50, ema200, rsi14, atr14, adx14,
-    bos, choch, liquiditySweep, displacement, volatilityRegime,
-    htfTrend15m, htfStructure5m,
-    bollUpper: boll.upper, bollLower: boll.lower, bollMid: boll.mid,
+    fvgs,
+    obs,
+    activeOB,
+    activeFVG,
+    decision: "WAIT",
+    confidence: 0.15,
+    rationale: "",
+    trend,
+    ema20,
+    ema50,
+    ema200,
+    rsi14,
+    atr14,
+    adx14,
+    bos,
+    choch,
+    liquiditySweep,
+    displacement,
+    volatilityRegime,
+    htfTrend15m,
+    htfStructure5m,
+    bollUpper: boll.upper,
+    bollLower: boll.lower,
+    bollMid: boll.mid,
     strategy: "ob-fvg",
     gateFailures: [],
   };
@@ -358,14 +418,17 @@ export function analyze(candles: Candle[]): LiveAnalysis {
 
   // HARD GATES
   if (!((isBull && trend === "up") || (!isBull && trend === "down"))) failures.push("trend");
-  if (!((isBull && htfTrend15m === "up") || (!isBull && htfTrend15m === "down"))) failures.push("htf-15m");
+  if (!((isBull && htfTrend15m === "up") || (!isBull && htfTrend15m === "down")))
+    failures.push("htf-15m");
   if (isBull ? rsi14 >= 68 : rsi14 <= 32) failures.push("rsi-extreme");
   if (volatilityRegime !== "normal") failures.push(`vol-${volatilityRegime}`);
   if (adx14 < 18) failures.push("adx-flat");
   if (!liquiditySweep && !displacement) failures.push("no-sweep-or-displacement");
 
   // retracement must actually be inside FVG
-  const retracedFVG = isBull ? lastPrice <= activeFVG.top + 0.1 * atr14 : lastPrice >= activeFVG.bottom - 0.1 * atr14;
+  const retracedFVG = isBull
+    ? lastPrice <= activeFVG.top + 0.1 * atr14
+    : lastPrice >= activeFVG.bottom - 0.1 * atr14;
   if (!retracedFVG) failures.push("fvg-not-retraced");
 
   // Plan (even if gates fail, so caller can inspect)
@@ -384,18 +447,18 @@ export function analyze(candles: Candle[]): LiveAnalysis {
   const emaAligned = isBull ? ema20 > ema50 && ema50 > ema200 : ema20 < ema50 && ema50 < ema200;
 
   // Confidence — only earn score when gates pass
-  let score = 0.30;
+  let score = 0.3;
   if (failures.length === 0) {
-    score += 0.20;
-    if (emaAligned) score += 0.10;
-    if (liquiditySweep) score += 0.10;
-    if (displacement) score += 0.10;
+    score += 0.2;
+    if (emaAligned) score += 0.1;
+    if (liquiditySweep) score += 0.1;
+    if (displacement) score += 0.1;
     if (bos) score += 0.08;
     if (choch) score += 0.05;
     if (adx14 > 25) score += 0.05;
   } else {
     // penalize per failed gate but keep some info signal
-    score = Math.max(0.10, 0.30 - 0.06 * failures.length);
+    score = Math.max(0.1, 0.3 - 0.06 * failures.length);
   }
   const confidence = Math.min(0.95, score);
 
@@ -410,9 +473,10 @@ export function analyze(candles: Candle[]): LiveAnalysis {
   base.sl = sl;
   base.tp = tp;
   base.gateFailures = failures;
-  base.rationale = failures.length === 0
-    ? `${isBull ? "Bullish" : "Bearish"} OB [${activeOB.bottom.toFixed(4)}, ${activeOB.top.toFixed(4)}] + unfilled FVG, retraced. Trend/HTF/RSI/ADX/sweep all pass. RR ≈ ${((Math.abs(tp - entry)) / slDist).toFixed(2)}.`
-    : `OB+FVG rejected — failed gates: ${failures.join(", ")}. Trend ${trend.toUpperCase()}, HTF15m ${htfTrend15m.toUpperCase()}, RSI ${rsi14.toFixed(0)}, ADX ${adx14.toFixed(0)}, vol=${volatilityRegime}.`;
+  base.rationale =
+    failures.length === 0
+      ? `${isBull ? "Bullish" : "Bearish"} OB [${activeOB.bottom.toFixed(4)}, ${activeOB.top.toFixed(4)}] + unfilled FVG, retraced. Trend/HTF/RSI/ADX/sweep all pass. RR ≈ ${(Math.abs(tp - entry) / slDist).toFixed(2)}.`
+      : `OB+FVG rejected — failed gates: ${failures.join(", ")}. Trend ${trend.toUpperCase()}, HTF15m ${htfTrend15m.toUpperCase()}, RSI ${rsi14.toFixed(0)}, ADX ${adx14.toFixed(0)}, vol=${volatilityRegime}.`;
   return base;
 }
 
@@ -443,27 +507,28 @@ export function analyzeMeanReversion(candles: Candle[]): LiveAnalysis {
   const sl = dir === "BUY" ? entry - slDist : entry + slDist;
   const tp = dir === "BUY" ? boll.mid : dir === "SELL" ? boll.mid : entry;
 
-  let score = 0.30;
+  let score = 0.3;
   if (failures.length === 0) {
     score += 0.25;
-    if (base.adx14 < 15) score += 0.10;
-    if ((dir === "BUY" && rsi14 < 25) || (dir === "SELL" && rsi14 > 75)) score += 0.10;
+    if (base.adx14 < 15) score += 0.1;
+    if ((dir === "BUY" && rsi14 < 25) || (dir === "SELL" && rsi14 > 75)) score += 0.1;
   } else {
-    score = Math.max(0.10, 0.28 - 0.06 * failures.length);
+    score = Math.max(0.1, 0.28 - 0.06 * failures.length);
   }
 
   return {
     ...base,
     strategy: "mean-reversion",
     decision: failures.length === 0 ? dir : "WAIT",
-    confidence: Math.min(0.90, score),
+    confidence: Math.min(0.9, score),
     entry: dir !== "WAIT" ? entry : undefined,
     sl: dir !== "WAIT" ? sl : undefined,
     tp: dir !== "WAIT" ? tp : undefined,
     gateFailures: failures,
-    rationale: failures.length === 0
-      ? `MR ${dir}: price ${dir === "BUY" ? "at lower" : "at upper"} band ${dir === "BUY" ? boll.lower.toFixed(4) : boll.upper.toFixed(4)}, RSI ${rsi14.toFixed(0)}, ADX ${base.adx14.toFixed(0)} (ranging). Target band midline.`
-      : `MR rejected — ${failures.join(", ")}. RSI ${rsi14.toFixed(0)}, ADX ${base.adx14.toFixed(0)}.`,
+    rationale:
+      failures.length === 0
+        ? `MR ${dir}: price ${dir === "BUY" ? "at lower" : "at upper"} band ${dir === "BUY" ? boll.lower.toFixed(4) : boll.upper.toFixed(4)}, RSI ${rsi14.toFixed(0)}, ADX ${base.adx14.toFixed(0)} (ranging). Target band midline.`
+        : `MR rejected — ${failures.join(", ")}. RSI ${rsi14.toFixed(0)}, ADX ${base.adx14.toFixed(0)}.`,
   };
 }
 
@@ -497,23 +562,27 @@ export function analyzeMomentum(candles: Candle[]): LiveAnalysis {
   });
   if (!hasDisp) failures.push("no-displacement");
 
-  const dir: "BUY" | "SELL" | "WAIT" = failures.length === 0
-    ? (base.trend === "up" ? "BUY" : "SELL")
-    : "WAIT";
+  const dir: "BUY" | "SELL" | "WAIT" =
+    failures.length === 0 ? (base.trend === "up" ? "BUY" : "SELL") : "WAIT";
 
   const slDist = 1.5 * base.atr14;
   const entry = price;
   const sl = dir === "BUY" ? entry - slDist : dir === "SELL" ? entry + slDist : entry;
-  const tp = dir === "BUY" ? entry + 2.5 * slDist / 1.5 : dir === "SELL" ? entry - 2.5 * slDist / 1.5 : entry;
+  const tp =
+    dir === "BUY"
+      ? entry + (2.5 * slDist) / 1.5
+      : dir === "SELL"
+        ? entry - (2.5 * slDist) / 1.5
+        : entry;
 
-  let score = 0.30;
+  let score = 0.3;
   if (failures.length === 0) {
     score += 0.25;
-    if (base.adx14 > 28) score += 0.10;
-    if (base.bos) score += 0.10;
+    if (base.adx14 > 28) score += 0.1;
+    if (base.bos) score += 0.1;
     if (base.liquiditySweep) score += 0.05;
   } else {
-    score = Math.max(0.10, 0.28 - 0.06 * failures.length);
+    score = Math.max(0.1, 0.28 - 0.06 * failures.length);
   }
 
   return {
@@ -525,9 +594,10 @@ export function analyzeMomentum(candles: Candle[]): LiveAnalysis {
     sl: dir !== "WAIT" ? sl : undefined,
     tp: dir !== "WAIT" ? tp : undefined,
     gateFailures: failures,
-    rationale: failures.length === 0
-      ? `Momentum ${dir}: trend ${base.trend.toUpperCase()}, EMA stacked, HTF aligned, pullback to EMA20, displacement present. ADX ${base.adx14.toFixed(0)}.`
-      : `Momentum rejected — ${failures.join(", ")}. ADX ${base.adx14.toFixed(0)}, trend ${base.trend}.`,
+    rationale:
+      failures.length === 0
+        ? `Momentum ${dir}: trend ${base.trend.toUpperCase()}, EMA stacked, HTF aligned, pullback to EMA20, displacement present. ADX ${base.adx14.toFixed(0)}.`
+        : `Momentum rejected — ${failures.join(", ")}. ADX ${base.adx14.toFixed(0)}, trend ${base.trend}.`,
   };
 }
 
@@ -537,6 +607,3 @@ export function analyzeMulti(candles: Candle[], selectedStrategies?: StrategyKin
   // Delegates to the regime-aware confluence ensemble (11 strategies).
   return analyzeEnsemble(candles, 70, selectedStrategies);
 }
-
-
-

@@ -5,14 +5,36 @@ export const STRATEGY_CATALOG: { id: StrategyKind; label: string; description: s
   { id: "apa", label: "APA", description: "Analysis → POI → Action at key zones" },
   { id: "liquidity-sweep", label: "Liquidity Sweep", description: "Sweep/reclaim reversal setups" },
   { id: "ob-fvg", label: "OB + FVG", description: "Order block + fair value gap confluence" },
-  { id: "vol-expansion", label: "Vol Expansion", description: "Compression into volatility expansion" },
+  {
+    id: "vol-expansion",
+    label: "Vol Expansion",
+    description: "Compression into volatility expansion",
+  },
   { id: "wyckoff", label: "Wyckoff", description: "Spring / UTAD range phase setups" },
   { id: "momentum", label: "Momentum", description: "EMA pullback + displacement continuation" },
-  { id: "mean-reversion", label: "Mean Reversion", description: "Bollinger bands + RSI mean-reversion" },
+  {
+    id: "mean-reversion",
+    label: "Mean Reversion",
+    description: "Bollinger bands + RSI mean-reversion",
+  },
   { id: "ote", label: "ICT OTE", description: "0.62–0.79 retracement entries" },
   { id: "fractal", label: "Fractal BOS/CHOCH", description: "Fractal structure break entries" },
-  { id: "dynamic-sr", label: "Dynamic S/R", description: "Nearest swing support/resistance target logic" },
+  {
+    id: "dynamic-sr",
+    label: "Dynamic S/R",
+    description: "Nearest swing support/resistance target logic",
+  },
   { id: "bb-rsi", label: "BB + RSI", description: "Bollinger band + RSI mean reversion" },
+  {
+    id: "titan1",
+    label: "TITAN1",
+    description: "Elite high-confluence: MSNR+CRT + APA + Liquidity Sweep + OB/FVG + strict regime",
+  },
+  {
+    id: "titan2",
+    label: "TITAN2",
+    description: "Adaptive momentum: 3-TF alignment, volatility-adjusted sizing, dynamic entries",
+  },
 ];
 
 /** Strategy combinations for multi-strategy setups */
@@ -41,9 +63,10 @@ export function normalizeStrategySelection(input?: string[] | null): StrategyKin
 /**
  * Check if a strategy combination is valid (up to 3 strategies can be combined).
  */
-export function validateStrategyCombination(
-  strategies: StrategyKind[]
-): { valid: boolean; error?: string } {
+export function validateStrategyCombination(strategies: StrategyKind[]): {
+  valid: boolean;
+  error?: string;
+} {
   if (strategies.length === 0) {
     return { valid: false, error: "At least one strategy must be selected" };
   }

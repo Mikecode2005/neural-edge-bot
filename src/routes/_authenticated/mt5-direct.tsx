@@ -150,12 +150,24 @@ function estimateRisk(lots: number, symbol: string): string {
   const isBtc = s.includes("btc");
   const isVol = s.includes("volatility") || s.includes("crash") || s.includes("boom");
   // pip $ per 1.0 lot approximations
-  let pipValue = 10;      // majors
-  let assumedPips = 20;   // 1.5*ATR ≈ 20 pips on 1m majors
-  if (isJpy) { pipValue = 9; assumedPips = 20; }
-  if (isGold) { pipValue = 10; assumedPips = 30; }
-  if (isBtc) { pipValue = 1; assumedPips = 200; }
-  if (isVol) { pipValue = 1; assumedPips = 40; }
+  let pipValue = 10; // majors
+  let assumedPips = 20; // 1.5*ATR ≈ 20 pips on 1m majors
+  if (isJpy) {
+    pipValue = 9;
+    assumedPips = 20;
+  }
+  if (isGold) {
+    pipValue = 10;
+    assumedPips = 30;
+  }
+  if (isBtc) {
+    pipValue = 1;
+    assumedPips = 200;
+  }
+  if (isVol) {
+    pipValue = 1;
+    assumedPips = 40;
+  }
   const risk = lots * pipValue * assumedPips;
   return `$${risk.toFixed(2)}`;
 }
@@ -479,8 +491,9 @@ function Mt5DirectPage() {
             <Zap className="size-3.5 text-primary" /> New MT5 Bot
           </h2>
           <p className="text-xs text-muted-foreground -mt-2">
-            Multi-strategy engine (OB+FVG · Momentum · Mean-Reversion) with hard institutional gates,
-            HTF alignment, loss-streak brake, and optional Qwen AI overlay. Position sizing is by
+            Multi-strategy engine (OB+FVG · Momentum · Mean-Reversion) with hard institutional
+            gates, HTF alignment, loss-streak brake, and optional Qwen AI overlay. Position sizing
+            is by
             <span className="text-primary font-medium"> lots</span> — dollar risk is derived from
             your SL distance × MT5 pip value.
           </p>
@@ -493,7 +506,9 @@ function Mt5DirectPage() {
                 onChange={(e) => setForm({ ...form, symbol: e.target.value })}
               >
                 {MT5_SYMBOLS.map((s) => (
-                  <option key={s} value={s}>{s}</option>
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
                 ))}
               </select>
             </div>
@@ -502,7 +517,9 @@ function Mt5DirectPage() {
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={form.account_type}
-                onChange={(e) => setForm({ ...form, account_type: e.target.value as "demo" | "real" })}
+                onChange={(e) =>
+                  setForm({ ...form, account_type: e.target.value as "demo" | "real" })
+                }
               >
                 <option value="demo">Demo</option>
                 <option value="real">Real (live money)</option>
@@ -539,8 +556,9 @@ function Mt5DirectPage() {
                 onChange={(e) => setForm({ ...form, volume: Number(e.target.value) })}
               />
               <p className="text-[10px] text-muted-foreground mt-1">
-                ≈ risk/trade: <span className="text-foreground">{estimateRisk(form.volume, form.symbol)}</span>
-                {" "}(1.5·ATR SL)
+                ≈ risk/trade:{" "}
+                <span className="text-foreground">{estimateRisk(form.volume, form.symbol)}</span>{" "}
+                (1.5·ATR SL)
               </p>
             </div>
             <div>
@@ -550,9 +568,24 @@ function Mt5DirectPage() {
                 value={form.strategy_mode}
                 onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as any })}
               >
-                <option value="ob-fvg">Multi-Strategy (recommended)</option>
-                <option value="ob-fvg-strict">OB + FVG only</option>
-                <option value="qwen">Qwen AI</option>
+                <option value="all">All Strategies (Ensemble)</option>
+                <option value="multi">Multi-Strategy (Top 3)</option>
+                <option value="titan1">TITAN1 (Elite Confluence)</option>
+                <option value="titan2">TITAN2 (Adaptive Momentum)</option>
+                <option value="msnr-crt">MSNR + CRT</option>
+                <option value="apa">APA</option>
+                <option value="liquidity-sweep">Liquidity Sweep</option>
+                <option value="ob-fvg">OB + FVG</option>
+                <option value="ob-fvg-strict">OB + FVG (Strict)</option>
+                <option value="vol-expansion">Vol Expansion</option>
+                <option value="wyckoff">Wyckoff</option>
+                <option value="momentum">Momentum</option>
+                <option value="mean-reversion">Mean Reversion</option>
+                <option value="ote">ICT OTE</option>
+                <option value="fractal">Fractal BOS/CHOCH</option>
+                <option value="dynamic-sr">Dynamic S/R</option>
+                <option value="bb-rsi">BB + RSI</option>
+                <option value="qwen">Qwen AI (requires API)</option>
               </select>
             </div>
           </div>

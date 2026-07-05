@@ -50,7 +50,11 @@ import { getDerivWS } from "@/lib/deriv/ws";
 import { analyze, analyzeMulti, type StrategyKind } from "@/lib/ob-fvg";
 import { DERIV_SYMBOLS } from "@/lib/deriv-ws";
 import { saveBacktest, listBacktests } from "@/lib/backtest/backtest.functions";
-import { STRATEGY_CATALOG, validateStrategyCombination, getStrategyLabel } from "@/lib/strategies/catalog";
+import {
+  STRATEGY_CATALOG,
+  validateStrategyCombination,
+  getStrategyLabel,
+} from "@/lib/strategies/catalog";
 
 export const Route = createFileRoute("/_authenticated/backtest")({
   head: () => ({ meta: [{ title: "Backtest — AI Trading" }] }),
@@ -181,7 +185,7 @@ function BacktestPage() {
   };
   const [riskMode, setRiskMode] = useState<"fixed" | "dynamic_pct" | "dynamic_kelly">("fixed");
   const [riskPerTrade, setRiskPerTrade] = useState(0.02); // 2% risk per trade
-  const [maxStakePct, setMaxStakePct] = useState(0.10); // max 10% of balance
+  const [maxStakePct, setMaxStakePct] = useState(0.1); // max 10% of balance
   const [showCandleChart, setShowCandleChart] = useState(false);
   const [selectedTradeCandles, setSelectedTradeCandles] = useState<Candlestick[]>([]);
 
@@ -189,39 +193,42 @@ function BacktestPage() {
   const [allCandles, setAllCandles] = useState<Candlestick[]>([]);
 
   // Calculate dynamic stake based on balance and risk mode
-  const calcStake = useCallback((balance: number, atr: number, isBuy: boolean, currentPrice: number): number => {
-    if (riskMode === "fixed") return stake;
-    
-    if (riskMode === "dynamic_pct") {
-      const pctStake = balance * riskPerTrade;
-      // Cap at maxStakePct of balance
-      const maxAllowed = balance * maxStakePct;
-      const finalStake = Math.min(pctStake, maxAllowed);
-      // Ensure minimum of $0.35 (Deriv minimum)
-      return Math.max(0.35, finalStake);
-    }
-    
-    if (riskMode === "dynamic_kelly") {
-      // Simplified Kelly: f = (p * b - q) / b
-      // where p = win probability (confidence), q = 1-p, b = payout odds (0.85)
-      const p = 0.55; // base assumption
-      const b = 0.85; // payout odds
-      const q = 1 - p;
-      const kellyFrac = Math.max(0, (p * b - q) / b);
-      // Use quarter Kelly for safety
-      const quarterKelly = kellyFrac * 0.25;
-      const kellyStake = balance * quarterKelly;
-      const maxAllowed = balance * maxStakePct;
-      const finalStake = Math.min(kellyStake, maxAllowed);
-      return Math.max(0.35, finalStake);
-    }
-    
-    return stake;
-  }, [riskMode, riskPerTrade, maxStakePct, stake]);
+  const calcStake = useCallback(
+    (balance: number, atr: number, isBuy: boolean, currentPrice: number): number => {
+      if (riskMode === "fixed") return stake;
+
+      if (riskMode === "dynamic_pct") {
+        const pctStake = balance * riskPerTrade;
+        // Cap at maxStakePct of balance
+        const maxAllowed = balance * maxStakePct;
+        const finalStake = Math.min(pctStake, maxAllowed);
+        // Ensure minimum of $0.35 (Deriv minimum)
+        return Math.max(0.35, finalStake);
+      }
+
+      if (riskMode === "dynamic_kelly") {
+        // Simplified Kelly: f = (p * b - q) / b
+        // where p = win probability (confidence), q = 1-p, b = payout odds (0.85)
+        const p = 0.55; // base assumption
+        const b = 0.85; // payout odds
+        const q = 1 - p;
+        const kellyFrac = Math.max(0, (p * b - q) / b);
+        // Use quarter Kelly for safety
+        const quarterKelly = kellyFrac * 0.25;
+        const kellyStake = balance * quarterKelly;
+        const maxAllowed = balance * maxStakePct;
+        const finalStake = Math.min(kellyStake, maxAllowed);
+        return Math.max(0.35, finalStake);
+      }
+
+      return stake;
+    },
+    [riskMode, riskPerTrade, maxStakePct, stake],
+  );
 
   // Get candles around a trade for visual chart
   const getCandlesAroundTrade = useCallback((trade: Trade, allC: Candlestick[]) => {
-    const idx = allC.findIndex(c => c.epoch === trade.entryCandleEpoch);
+    const idx = allC.findIndex((c) => c.epoch === trade.entryCandleEpoch);
     if (idx < 0) return [];
     const start = Math.max(0, idx - 10);
     const end = Math.min(allC.length, idx + 15);
@@ -229,7 +236,9 @@ function BacktestPage() {
   }, []);
 
   useEffect(() => {
-    fnList().then(setHistory).catch(() => {});
+    fnList()
+      .then(setHistory)
+      .catch(() => {});
   }, [fnList]);
 
   const computeMetrics = (localTrades: Trade[], balance: number): BacktestMetrics => {
@@ -255,11 +264,21 @@ function BacktestPage() {
     }
 
     // Consecutive wins/losses
-    let maxConsWins = 0, maxConsLosses = 0, consWins = 0, consLosses = 0;
+    let maxConsWins = 0,
+      maxConsLosses = 0,
+      consWins = 0,
+      consLosses = 0;
     for (const t of localTrades) {
-      if (t.pnl > 0) { consWins++; consLosses = 0; }
-      else if (t.pnl < 0) { consLosses++; consWins = 0; }
-      else { consWins = 0; consLosses = 0; }
+      if (t.pnl > 0) {
+        consWins++;
+        consLosses = 0;
+      } else if (t.pnl < 0) {
+        consLosses++;
+        consWins = 0;
+      } else {
+        consWins = 0;
+        consLosses = 0;
+      }
       if (consWins > maxConsWins) maxConsWins = consWins;
       if (consLosses > maxConsLosses) maxConsLosses = consLosses;
     }
@@ -278,9 +297,10 @@ function BacktestPage() {
     const stdDev = Math.sqrt(variance);
     const sharpe = stdDev > 0 ? (meanReturn / stdDev) * Math.sqrt(252) : 0;
 
-    const avgBarsHeld = localTrades.length > 0
-      ? localTrades.reduce((a, t) => a + t.barsHeld, 0) / localTrades.length
-      : 0;
+    const avgBarsHeld =
+      localTrades.length > 0
+        ? localTrades.reduce((a, t) => a + t.barsHeld, 0) / localTrades.length
+        : 0;
 
     return {
       totalTrades: localTrades.length,
@@ -329,9 +349,7 @@ function BacktestPage() {
       }
       let balance = startingBalance;
       const localTrades: Trade[] = [];
-      const curve: { t: number; equity: number }[] = [
-        { t: candles[60].epoch, equity: balance },
-      ];
+      const curve: { t: number; equity: number }[] = [{ t: candles[60].epoch, equity: balance }];
       const ddCurve: { t: number; dd: number }[] = [{ t: candles[60].epoch, dd: 0 }];
       let peak = balance;
       let tradeNum = 0;
@@ -422,8 +440,16 @@ function BacktestPage() {
               entryCandleEpoch: entryCandle.epoch,
               exitCandleEpoch: c.epoch,
               entryCandleIdx: openIdx,
-              entryTimeFormatted: new Date(entryCandle.epoch * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              exitTimeFormatted: new Date(c.epoch * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+              entryTimeFormatted: new Date(entryCandle.epoch * 1000).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              }),
+              exitTimeFormatted: new Date(c.epoch * 1000).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              }),
               riskPct: balanceBeforeTrade > 0 ? (openStake / balanceBeforeTrade) * 100 : 0,
               distanceToSL,
               distanceToTP,
@@ -457,18 +483,20 @@ function BacktestPage() {
             openIdx = i;
             openSide = a.decision === "BUY" ? "BUY" : "SELL";
             openEntry = c.close;
-            openSL = a.sl ?? (openSide === "BUY" ? openEntry - 1.0 * a.atr14 : openEntry + 1.0 * a.atr14);
-            openTP = a.tp ?? (openSide === "BUY" ? openEntry + 1.5 * a.atr14 : openEntry - 1.5 * a.atr14);
+            openSL =
+              a.sl ?? (openSide === "BUY" ? openEntry - 1.0 * a.atr14 : openEntry + 1.0 * a.atr14);
+            openTP =
+              a.tp ?? (openSide === "BUY" ? openEntry + 1.5 * a.atr14 : openEntry - 1.5 * a.atr14);
             openAnalysis = a;
-            
+
             // Calculate dynamic stake based on current balance
             openStake = calcStake(balance, a.atr14, openSide === "BUY", c.close);
-            
+
             // Validate that stake doesn't exceed balance
             if (openStake > balance) {
               openStake = Math.max(0.35, balance * 0.5); // Use max 50% of balance if stake exceeds balance
             }
-            
+
             // Extra safety: stake can't exceed 50% of balance for any single trade
             const maxSafeStake = balance * 0.5;
             if (openStake > maxSafeStake) {
@@ -513,13 +541,24 @@ function BacktestPage() {
           trades_count: localTrades.length,
           equity_curve: curve,
           trades: localTrades,
-          params: { count, minConfidence, stake, startingBalance, strategyMode, riskMode, riskPerTrade, maxStakePct },
+          params: {
+            count,
+            minConfidence,
+            stake,
+            startingBalance,
+            strategyMode,
+            riskMode,
+            riskPerTrade,
+            maxStakePct,
+          },
         },
       });
       toast.success(
-        `Backtest done · ${localTrades.length} trades · ${m.winRate.toFixed(1)}% wins · PF ${m.profitFactor === Infinity ? "∞" : m.profitFactor.toFixed(2)} · Risk: ${riskMode === "fixed" ? `$${stake}` : `${(riskPerTrade*100).toFixed(1)}%/trade`}`
+        `Backtest done · ${localTrades.length} trades · ${m.winRate.toFixed(1)}% wins · PF ${m.profitFactor === Infinity ? "∞" : m.profitFactor.toFixed(2)} · Risk: ${riskMode === "fixed" ? `$${stake}` : `${(riskPerTrade * 100).toFixed(1)}%/trade`}`,
       );
-      fnList().then(setHistory).catch(() => {});
+      fnList()
+        .then(setHistory)
+        .catch(() => {});
     } catch (e: any) {
       toast.error("Backtest failed", { description: e.message });
     } finally {
@@ -587,8 +626,9 @@ function BacktestPage() {
         <header>
           <h1 className="text-2xl font-semibold tracking-tight">Backtest Engine</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Replay the OB+FVG strategy on historical Deriv candles with walk-forward broker simulation.
-            Adjust parameters to optimize profit factor and drawdown. Stake is now dynamically bounded by your balance.
+            Replay the OB+FVG strategy on historical Deriv candles with walk-forward broker
+            simulation. Adjust parameters to optimize profit factor and drawdown. Stake is now
+            dynamically bounded by your balance.
           </p>
         </header>
 
@@ -606,7 +646,8 @@ function BacktestPage() {
               )}
               {riskMode !== "fixed" && (
                 <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30 gap-1">
-                  <Calculator className="size-3" /> {riskMode === "dynamic_pct" ? "Dynamic %" : "Kelly"}
+                  <Calculator className="size-3" />{" "}
+                  {riskMode === "dynamic_pct" ? "Dynamic %" : "Kelly"}
                 </Badge>
               )}
             </div>
@@ -620,7 +661,9 @@ function BacktestPage() {
                 onChange={(e) => setSymbol(e.target.value)}
               >
                 {DERIV_SYMBOLS.map((s) => (
-                  <option key={s.code} value={s.code}>{s.code} — {s.label}</option>
+                  <option key={s.code} value={s.code}>
+                    {s.code} — {s.label}
+                  </option>
                 ))}
               </select>
             </div>
@@ -632,29 +675,41 @@ function BacktestPage() {
                 onChange={(e) => setTimeframe(e.target.value)}
               >
                 {TIMEFRAMES.map((t) => (
-                  <option key={t.code} value={t.code}>{t.label}</option>
+                  <option key={t.code} value={t.code}>
+                    {t.label}
+                  </option>
                 ))}
               </select>
             </div>
             <div>
               <Label className="text-xs">Candles Count</Label>
               <Input
-                type="number" min={120} max={5000}
-                value={count} onChange={(e) => setCount(Number(e.target.value))}
+                type="number"
+                min={120}
+                max={5000}
+                value={count}
+                onChange={(e) => setCount(Number(e.target.value))}
               />
             </div>
             <div>
               <Label className="text-xs">Starting Balance ($)</Label>
               <Input
-                type="number" min={1} step={10}
-                value={startingBalance} onChange={(e) => setStartingBalance(Number(e.target.value))}
+                type="number"
+                min={1}
+                step={10}
+                value={startingBalance}
+                onChange={(e) => setStartingBalance(Number(e.target.value))}
               />
             </div>
             <div>
               <Label className="text-xs">Min Confidence</Label>
               <Input
-                type="number" step="0.05" min={0} max={1}
-                value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))}
+                type="number"
+                step="0.05"
+                min={0}
+                max={1}
+                value={minConfidence}
+                onChange={(e) => setMinConfidence(Number(e.target.value))}
               />
             </div>
             <div>
@@ -662,12 +717,28 @@ function BacktestPage() {
               <select
                 className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                 value={strategyMode}
-                onChange={(e) => setStrategyMode(e.target.value as "strategy" | "qwen")}
+                onChange={(e) => setStrategyMode(e.target.value as any)}
               >
-                <option value="strategy">OB+FVG Strategy Only</option>
+                <option value="all">All Strategies (Ensemble)</option>
+                <option value="multi">Multi-Strategy (Top 3)</option>
+                <option value="titan1">TITAN1 (Elite Confluence)</option>
+                <option value="titan2">TITAN2 (Adaptive Momentum)</option>
+                <option value="msnr-crt">MSNR + CRT</option>
+                <option value="apa">APA</option>
+                <option value="liquidity-sweep">Liquidity Sweep</option>
+                <option value="ob-fvg">OB + FVG</option>
+                <option value="vol-expansion">Vol Expansion</option>
+                <option value="wyckoff">Wyckoff</option>
+                <option value="momentum">Momentum</option>
+                <option value="mean-reversion">Mean Reversion</option>
+                <option value="ote">ICT OTE</option>
+                <option value="fractal">Fractal BOS/CHOCH</option>
+                <option value="dynamic-sr">Dynamic S/R</option>
+                <option value="bb-rsi">BB + RSI</option>
                 <option value="qwen">Qwen AI (requires API)</option>
               </select>
             </div>
+
             <div className="flex items-end">
               <Button onClick={run} disabled={running} className="w-full gap-1.5">
                 <Play className="size-3.5" />
@@ -684,7 +755,9 @@ function BacktestPage() {
                 <select
                   className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-sm"
                   value={riskMode}
-                  onChange={(e) => setRiskMode(e.target.value as "fixed" | "dynamic_pct" | "dynamic_kelly")}
+                  onChange={(e) =>
+                    setRiskMode(e.target.value as "fixed" | "dynamic_pct" | "dynamic_kelly")
+                  }
                 >
                   <option value="fixed">Fixed Stake ($)</option>
                   <option value="dynamic_pct">Dynamic % of Balance</option>
@@ -695,8 +768,11 @@ function BacktestPage() {
                 <div>
                   <Label className="text-xs">Stake / Trade ($)</Label>
                   <Input
-                    type="number" step="0.5" min={0.35}
-                    value={stake} onChange={(e) => setStake(Number(e.target.value))}
+                    type="number"
+                    step="0.5"
+                    min={0.35}
+                    value={stake}
+                    onChange={(e) => setStake(Number(e.target.value))}
                   />
                 </div>
               )}
@@ -704,7 +780,10 @@ function BacktestPage() {
                 <div>
                   <Label className="text-xs">Risk % Per Trade</Label>
                   <Input
-                    type="number" step="0.5" min={0.5} max={50}
+                    type="number"
+                    step="0.5"
+                    min={0.5}
+                    max={50}
                     value={riskPerTrade * 100}
                     onChange={(e) => setRiskPerTrade(Number(e.target.value) / 100)}
                   />
@@ -714,7 +793,10 @@ function BacktestPage() {
                 <div>
                   <Label className="text-xs">Max Stake % (Cap)</Label>
                   <Input
-                    type="number" step="1" min={1} max={50}
+                    type="number"
+                    step="1"
+                    min={1}
+                    max={50}
                     value={maxStakePct * 100}
                     onChange={(e) => setMaxStakePct(Number(e.target.value) / 100)}
                   />
@@ -724,7 +806,10 @@ function BacktestPage() {
                 <div>
                   <Label className="text-xs">Max Stake % of Balance</Label>
                   <Input
-                    type="number" step="1" min={1} max={50}
+                    type="number"
+                    step="1"
+                    min={1}
+                    max={50}
                     value={maxStakePct * 100}
                     onChange={(e) => setMaxStakePct(Number(e.target.value) / 100)}
                   />
@@ -748,10 +833,14 @@ function BacktestPage() {
               )}
               <div className="flex items-end">
                 <div className="bg-card/50 rounded-lg px-3 py-1.5 border border-border/60 w-full">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Balance Safety</p>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    Balance Safety
+                  </p>
                   <p className="text-xs mt-0.5">
                     {riskMode === "fixed" && stake > startingBalance * 0.5 ? (
-                      <span className="text-bear font-semibold">⚠️ Stake exceeds 50% of balance!</span>
+                      <span className="text-bear font-semibold">
+                        ⚠️ Stake exceeds 50% of balance!
+                      </span>
                     ) : riskMode === "fixed" && stake > startingBalance ? (
                       <span className="text-bear font-semibold">⚠️ Stake exceeds balance!</span>
                     ) : (
@@ -769,9 +858,23 @@ function BacktestPage() {
           <>
             {/* Key metrics grid */}
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              <MiniIndicator icon={<Target className="size-3.5" />} label="Total Trades" value={metrics.totalTrades} />
-              <MiniIndicator icon={<TrendingUp className="size-3.5" />} label="Win Rate" value={`${metrics.winRate.toFixed(1)}%`} tone={metrics.winRate >= 58 ? "bull" : "bear"} />
-              <MiniIndicator icon={<TrendingDown className="size-3.5" />} label="Loss Rate" value={`${metrics.lossRate.toFixed(1)}%`} tone="bear" />
+              <MiniIndicator
+                icon={<Target className="size-3.5" />}
+                label="Total Trades"
+                value={metrics.totalTrades}
+              />
+              <MiniIndicator
+                icon={<TrendingUp className="size-3.5" />}
+                label="Win Rate"
+                value={`${metrics.winRate.toFixed(1)}%`}
+                tone={metrics.winRate >= 58 ? "bull" : "bear"}
+              />
+              <MiniIndicator
+                icon={<TrendingDown className="size-3.5" />}
+                label="Loss Rate"
+                value={`${metrics.lossRate.toFixed(1)}%`}
+                tone="bear"
+              />
               <MiniIndicator
                 icon={<Zap className="size-3.5" />}
                 label="Total P&L"
@@ -800,18 +903,58 @@ function BacktestPage() {
                 value={`$${metrics.maxDrawdown.toFixed(2)} (${metrics.maxDrawdownPct.toFixed(1)}%)`}
                 tone={metrics.maxDrawdownPct > 15 ? "bear" : "bull"}
               />
-              <MiniIndicator icon={<Award className="size-3.5" />} label="Best Trade" value={`+$${metrics.bestTrade.toFixed(2)}`} tone="bull" />
-              <MiniIndicator icon={<Flame className="size-3.5" />} label="Worst Trade" value={`$${metrics.worstTrade.toFixed(2)}`} tone="bear" />
-              <MiniIndicator icon={<TrendingUp className="size-3.5" />} label="Avg Win" value={`+$${metrics.avgWin.toFixed(2)}`} tone="bull" />
-              <MiniIndicator icon={<TrendingDown className="size-3.5" />} label="Avg Loss" value={`-$${metrics.avgLoss.toFixed(2)}`} tone="bear" />
+              <MiniIndicator
+                icon={<Award className="size-3.5" />}
+                label="Best Trade"
+                value={`+$${metrics.bestTrade.toFixed(2)}`}
+                tone="bull"
+              />
+              <MiniIndicator
+                icon={<Flame className="size-3.5" />}
+                label="Worst Trade"
+                value={`$${metrics.worstTrade.toFixed(2)}`}
+                tone="bear"
+              />
+              <MiniIndicator
+                icon={<TrendingUp className="size-3.5" />}
+                label="Avg Win"
+                value={`+$${metrics.avgWin.toFixed(2)}`}
+                tone="bull"
+              />
+              <MiniIndicator
+                icon={<TrendingDown className="size-3.5" />}
+                label="Avg Loss"
+                value={`-$${metrics.avgLoss.toFixed(2)}`}
+                tone="bear"
+              />
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              <MiniIndicator label="Risk/Reward" value={`1:${metrics.riskRewardRatio.toFixed(2)}`} tone={metrics.riskRewardRatio >= 1.3 ? "bull" : "bear"} />
-              <MiniIndicator label="Sharpe Ratio" value={metrics.sharpeRatio.toFixed(2)} tone={metrics.sharpeRatio >= 1.0 ? "bull" : "bear"} />
-              <MiniIndicator label="Expectancy" value={`${metrics.expectancy >= 0 ? "+" : ""}$${metrics.expectancy.toFixed(2)}/trade`} tone={metrics.expectancy >= 0.2 ? "bull" : "bear"} />
-              <MiniIndicator label="Max Win Streak" value={`${metrics.maxConsecutiveWins}`} tone="bull" />
-              <MiniIndicator label="Max Loss Streak" value={`${metrics.maxConsecutiveLosses}`} tone="bear" />
+              <MiniIndicator
+                label="Risk/Reward"
+                value={`1:${metrics.riskRewardRatio.toFixed(2)}`}
+                tone={metrics.riskRewardRatio >= 1.3 ? "bull" : "bear"}
+              />
+              <MiniIndicator
+                label="Sharpe Ratio"
+                value={metrics.sharpeRatio.toFixed(2)}
+                tone={metrics.sharpeRatio >= 1.0 ? "bull" : "bear"}
+              />
+              <MiniIndicator
+                label="Expectancy"
+                value={`${metrics.expectancy >= 0 ? "+" : ""}$${metrics.expectancy.toFixed(2)}/trade`}
+                tone={metrics.expectancy >= 0.2 ? "bull" : "bear"}
+              />
+              <MiniIndicator
+                label="Max Win Streak"
+                value={`${metrics.maxConsecutiveWins}`}
+                tone="bull"
+              />
+              <MiniIndicator
+                label="Max Loss Streak"
+                value={`${metrics.maxConsecutiveLosses}`}
+                tone="bear"
+              />
             </div>
 
             {/* Charts */}
@@ -830,19 +973,40 @@ function BacktestPage() {
                           <stop offset="100%" stopColor="oklch(0.78 0.16 200)" stopOpacity={0} />
                         </linearGradient>
                       </defs>
-                      <CartesianGrid stroke="var(--color-grid)" strokeOpacity={0.4} vertical={false} />
+                      <CartesianGrid
+                        stroke="var(--color-grid)"
+                        strokeOpacity={0.4}
+                        vertical={false}
+                      />
                       <XAxis
                         dataKey="t"
-                        tickFormatter={(t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        stroke="var(--color-muted-foreground)" fontSize={10}
+                        tickFormatter={(t) =>
+                          new Date(t * 1000).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        }
+                        stroke="var(--color-muted-foreground)"
+                        fontSize={10}
                       />
                       <YAxis stroke="var(--color-muted-foreground)" fontSize={10} />
                       <Tooltip
-                        contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", fontSize: 11, borderRadius: 8 }}
+                        contentStyle={{
+                          background: "var(--color-popover)",
+                          border: "1px solid var(--color-border)",
+                          fontSize: 11,
+                          borderRadius: 8,
+                        }}
                         formatter={(v: number) => [`$${v.toFixed(2)}`, "Equity"]}
                         labelFormatter={(t) => new Date(Number(t) * 1000).toLocaleString()}
                       />
-                      <Area type="monotone" dataKey="equity" stroke="oklch(0.78 0.16 200)" fill="url(#eq)" strokeWidth={2} />
+                      <Area
+                        type="monotone"
+                        dataKey="equity"
+                        stroke="oklch(0.78 0.16 200)"
+                        fill="url(#eq)"
+                        strokeWidth={2}
+                      />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -862,19 +1026,44 @@ function BacktestPage() {
                           <stop offset="100%" stopColor="oklch(0.66 0.22 18)" stopOpacity={0.4} />
                         </linearGradient>
                       </defs>
-                      <CartesianGrid stroke="var(--color-grid)" strokeOpacity={0.4} vertical={false} />
+                      <CartesianGrid
+                        stroke="var(--color-grid)"
+                        strokeOpacity={0.4}
+                        vertical={false}
+                      />
                       <XAxis
                         dataKey="t"
-                        tickFormatter={(t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        stroke="var(--color-muted-foreground)" fontSize={10}
+                        tickFormatter={(t) =>
+                          new Date(t * 1000).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        }
+                        stroke="var(--color-muted-foreground)"
+                        fontSize={10}
                       />
-                      <YAxis stroke="var(--color-muted-foreground)" fontSize={10} tickFormatter={(v) => `${v.toFixed(1)}%`} />
+                      <YAxis
+                        stroke="var(--color-muted-foreground)"
+                        fontSize={10}
+                        tickFormatter={(v) => `${v.toFixed(1)}%`}
+                      />
                       <Tooltip
-                        contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", fontSize: 11, borderRadius: 8 }}
+                        contentStyle={{
+                          background: "var(--color-popover)",
+                          border: "1px solid var(--color-border)",
+                          fontSize: 11,
+                          borderRadius: 8,
+                        }}
                         formatter={(v: number) => [`${v.toFixed(2)}%`, "Drawdown"]}
                         labelFormatter={(t) => new Date(Number(t) * 1000).toLocaleString()}
                       />
-                      <Area type="monotone" dataKey="dd" stroke="oklch(0.66 0.22 18)" fill="url(#dd)" strokeWidth={2} />
+                      <Area
+                        type="monotone"
+                        dataKey="dd"
+                        stroke="oklch(0.66 0.22 18)"
+                        fill="url(#dd)"
+                        strokeWidth={2}
+                      />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -890,17 +1079,30 @@ function BacktestPage() {
                 <div className="h-[220px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={pnlBins}>
-                      <CartesianGrid stroke="var(--color-grid)" strokeOpacity={0.4} vertical={false} />
+                      <CartesianGrid
+                        stroke="var(--color-grid)"
+                        strokeOpacity={0.4}
+                        vertical={false}
+                      />
                       <XAxis dataKey="range" stroke="var(--color-muted-foreground)" fontSize={10} />
                       <YAxis stroke="var(--color-muted-foreground)" fontSize={10} />
                       <Tooltip
-                        contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", fontSize: 11, borderRadius: 8 }}
+                        contentStyle={{
+                          background: "var(--color-popover)",
+                          border: "1px solid var(--color-border)",
+                          fontSize: 11,
+                          borderRadius: 8,
+                        }}
                       />
                       <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                         {pnlBins.map((entry, idx) => (
                           <Cell
                             key={idx}
-                            fill={entry.isProfit ? "oklch(0.78 0.18 152 / 70%)" : "oklch(0.66 0.22 18 / 70%)"}
+                            fill={
+                              entry.isProfit
+                                ? "oklch(0.78 0.18 152 / 70%)"
+                                : "oklch(0.66 0.22 18 / 70%)"
+                            }
                           />
                         ))}
                       </Bar>
@@ -925,7 +1127,11 @@ function BacktestPage() {
                     </Badge>
                   )}
                 </h3>
-                {showTradeLog ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                {showTradeLog ? (
+                  <ChevronUp className="size-4" />
+                ) : (
+                  <ChevronDown className="size-4" />
+                )}
               </button>
 
               {showTradeLog && (
@@ -967,28 +1173,37 @@ function BacktestPage() {
                             <td className="px-3 py-1.5 numeric text-[10px]">
                               {t.exitTimeFormatted}
                             </td>
-                            <td className={`px-3 py-1.5 font-semibold ${t.side === "BUY" ? "text-bull" : "text-bear"}`}>
+                            <td
+                              className={`px-3 py-1.5 font-semibold ${t.side === "BUY" ? "text-bull" : "text-bear"}`}
+                            >
                               {t.side}
                             </td>
                             <td className="px-3 py-1.5 numeric">{t.entry.toFixed(4)}</td>
                             <td className="px-3 py-1.5 numeric">{t.exit.toFixed(4)}</td>
                             <td className="px-3 py-1.5 numeric">${t.stake.toFixed(2)}</td>
-                            <td className={`px-3 py-1.5 numeric font-semibold ${t.pnl >= 0 ? "text-bull" : "text-bear"}`}>
-                              {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}
+                            <td
+                              className={`px-3 py-1.5 numeric font-semibold ${t.pnl >= 0 ? "text-bull" : "text-bear"}`}
+                            >
+                              {t.pnl >= 0 ? "+" : ""}
+                              {t.pnl.toFixed(2)}
                             </td>
-                            <td className={`px-3 py-1.5 numeric ${t.cumPnl >= 0 ? "text-bull" : "text-bear"}`}>
-                              {t.cumPnl >= 0 ? "+" : ""}{t.cumPnl.toFixed(2)}
+                            <td
+                              className={`px-3 py-1.5 numeric ${t.cumPnl >= 0 ? "text-bull" : "text-bear"}`}
+                            >
+                              {t.cumPnl >= 0 ? "+" : ""}
+                              {t.cumPnl.toFixed(2)}
                             </td>
+                            <td className="px-3 py-1.5 numeric">${t.balanceAtEntry.toFixed(2)}</td>
+                            <td className="px-3 py-1.5 numeric">{t.riskPct.toFixed(1)}%</td>
                             <td className="px-3 py-1.5 numeric">
-                              ${t.balanceAtEntry.toFixed(2)}
+                              {(t.confidence * 100).toFixed(0)}%
                             </td>
-                            <td className="px-3 py-1.5 numeric">
-                              {t.riskPct.toFixed(1)}%
-                            </td>
-                            <td className="px-3 py-1.5 numeric">{(t.confidence * 100).toFixed(0)}%</td>
                             <td className="px-3 py-1.5 numeric">{t.barsHeld}</td>
                             <td className="px-3 py-1.5">
-                              <Badge variant={t.outcome === "WIN" ? "default" : "destructive"} className="text-[10px] h-4 px-1.5">
+                              <Badge
+                                variant={t.outcome === "WIN" ? "default" : "destructive"}
+                                className="text-[10px] h-4 px-1.5"
+                              >
                                 {t.outcome}
                               </Badge>
                             </td>
@@ -997,9 +1212,14 @@ function BacktestPage() {
                                 size="sm"
                                 variant="ghost"
                                 className="h-5 w-5 p-0"
-                                onClick={(e) => { e.stopPropagation(); handleExpandTrade(i, t); }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleExpandTrade(i, t);
+                                }}
                               >
-                                <ChevronDown className={`size-3 transition-transform ${expandedTradeIdx === i ? "rotate-180" : ""}`} />
+                                <ChevronDown
+                                  className={`size-3 transition-transform ${expandedTradeIdx === i ? "rotate-180" : ""}`}
+                                />
                               </Button>
                             </td>
                           </tr>
@@ -1034,7 +1254,10 @@ function BacktestPage() {
             <div className="border-t border-border p-4">
               <div className="space-y-2">
                 {history.map((h) => (
-                  <div key={h.id} className="flex items-center justify-between text-xs py-2 px-3 rounded-lg hover:bg-card/30 transition-colors">
+                  <div
+                    key={h.id}
+                    className="flex items-center justify-between text-xs py-2 px-3 rounded-lg hover:bg-card/30 transition-colors"
+                  >
                     <div className="flex items-center gap-2">
                       <Badge variant="outline">{h.symbol}</Badge>
                       <Badge variant="outline">{h.timeframe}</Badge>
@@ -1045,14 +1268,21 @@ function BacktestPage() {
                     <div className="flex items-center gap-4">
                       <span>{h.trades_count} trades</span>
                       <span>{((h.win_rate ?? 0) * 100).toFixed(0)}% wins</span>
-                      <span className={h.final_pnl >= 0 ? "text-bull font-semibold" : "text-bear font-semibold"}>
-                        {h.final_pnl >= 0 ? "+" : ""}{Number(h.final_pnl).toFixed(2)}
+                      <span
+                        className={
+                          h.final_pnl >= 0 ? "text-bull font-semibold" : "text-bear font-semibold"
+                        }
+                      >
+                        {h.final_pnl >= 0 ? "+" : ""}
+                        {Number(h.final_pnl).toFixed(2)}
                       </span>
                     </div>
                   </div>
                 ))}
                 {!history.length && (
-                  <p className="text-xs text-muted-foreground text-center py-4">No backtests saved yet.</p>
+                  <p className="text-xs text-muted-foreground text-center py-4">
+                    No backtests saved yet.
+                  </p>
                 )}
               </div>
             </div>
@@ -1071,10 +1301,22 @@ function TradeDetail({ trade }: { trade: Trade }) {
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
         <MiniDetail label="Entry Price" value={trade.entry.toFixed(4)} />
         <MiniDetail label="Exit Price" value={trade.exit.toFixed(4)} />
-        <MiniDetail label="Stop Loss" value={trade.stopLoss.toFixed(4)} tone={trade.outcome === "LOSS" && trade.exit === trade.stopLoss ? "bear" : undefined} />
-        <MiniDetail label="Take Profit" value={trade.takeProfit.toFixed(4)} tone={trade.outcome === "WIN" && trade.exit === trade.takeProfit ? "bull" : undefined} />
+        <MiniDetail
+          label="Stop Loss"
+          value={trade.stopLoss.toFixed(4)}
+          tone={trade.outcome === "LOSS" && trade.exit === trade.stopLoss ? "bear" : undefined}
+        />
+        <MiniDetail
+          label="Take Profit"
+          value={trade.takeProfit.toFixed(4)}
+          tone={trade.outcome === "WIN" && trade.exit === trade.takeProfit ? "bull" : undefined}
+        />
         <MiniDetail label="Stake Amount" value={`$${trade.stake.toFixed(2)}`} />
-        <MiniDetail label="P&L" value={`${trade.pnl >= 0 ? "+" : ""}$${trade.pnl.toFixed(2)}`} tone={trade.pnl >= 0 ? "bull" : "bear"} />
+        <MiniDetail
+          label="P&L"
+          value={`${trade.pnl >= 0 ? "+" : ""}$${trade.pnl.toFixed(2)}`}
+          tone={trade.pnl >= 0 ? "bull" : "bear"}
+        />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -1101,7 +1343,11 @@ function TradeDetail({ trade }: { trade: Trade }) {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-        <MiniDetail label="Trend" value={trade.trend.toUpperCase()} tone={trade.trend === "up" ? "bull" : "bear"} />
+        <MiniDetail
+          label="Trend"
+          value={trade.trend.toUpperCase()}
+          tone={trade.trend === "up" ? "bull" : "bear"}
+        />
         <MiniDetail label="EMA20" value={trade.ema20.toFixed(4)} />
         <MiniDetail label="RSI14" value={trade.rsi14.toFixed(1)} />
         <MiniDetail label="ATR14" value={trade.atr14.toFixed(5)} />
@@ -1110,11 +1356,15 @@ function TradeDetail({ trade }: { trade: Trade }) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Order Block</p>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Order Block
+          </p>
           <p className="text-xs font-mono">{trade.obZone ?? "None"}</p>
         </div>
         <div>
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Fair Value Gap</p>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Fair Value Gap
+          </p>
           <p className="text-xs font-mono">{trade.fvgZone ?? "None"}</p>
         </div>
       </div>
@@ -1127,15 +1377,21 @@ function TradeDetail({ trade }: { trade: Trade }) {
         <div className="flex items-center gap-3">
           <div className="flex-1 bg-card rounded-full h-3 overflow-hidden border border-border/50 relative">
             {/* SL marker */}
-            <div className="absolute top-0 left-0 h-full bg-bear/30" style={{
-              width: `${Math.min(100, (trade.distanceToSL / (trade.distanceToSL + trade.distanceToTP)) * 100)}%`
-            }} />
+            <div
+              className="absolute top-0 left-0 h-full bg-bear/30"
+              style={{
+                width: `${Math.min(100, (trade.distanceToSL / (trade.distanceToSL + trade.distanceToTP)) * 100)}%`,
+              }}
+            />
             {/* Entry marker */}
             <div className="absolute top-0 left-1/2 w-0.5 h-full bg-foreground z-10" />
             {/* TP marker */}
-            <div className="absolute top-0 right-0 h-full bg-bull/30" style={{
-              width: `${Math.min(100, (trade.distanceToTP / (trade.distanceToSL + trade.distanceToTP)) * 100)}%`
-            }} />
+            <div
+              className="absolute top-0 right-0 h-full bg-bull/30"
+              style={{
+                width: `${Math.min(100, (trade.distanceToTP / (trade.distanceToSL + trade.distanceToTP)) * 100)}%`,
+              }}
+            />
           </div>
           <span className="text-[10px] text-bear shrink-0">
             SL: {trade.distanceToSL.toFixed(4)}

@@ -32,9 +32,7 @@ export function RecentSignals() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "live_signals" },
         (payload) => {
-          setSignals((prev) =>
-            [payload.new as unknown as Signal, ...prev].slice(0, 20),
-          );
+          setSignals((prev) => [payload.new as unknown as Signal, ...prev].slice(0, 20));
         },
       )
       .subscribe();
@@ -48,9 +46,7 @@ export function RecentSignals() {
   return (
     <div className="glass rounded-xl p-4 h-full flex flex-col">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm uppercase tracking-wider text-muted-foreground">
-          Signal Feed
-        </h3>
+        <h3 className="text-sm uppercase tracking-wider text-muted-foreground">Signal Feed</h3>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="size-1.5 rounded-full bg-bull pulse-dot" />
           Live
@@ -64,11 +60,7 @@ export function RecentSignals() {
         )}
         {signals.map((s) => {
           const tone =
-            s.decision === "BUY"
-              ? "text-bull"
-              : s.decision === "SELL"
-              ? "text-bear"
-              : "text-warn";
+            s.decision === "BUY" ? "text-bull" : s.decision === "SELL" ? "text-bear" : "text-warn";
           return (
             <div
               key={s.id}
@@ -77,13 +69,9 @@ export function RecentSignals() {
               <div className="flex items-center gap-3 min-w-0">
                 <span className={`font-semibold ${tone} w-12`}>{s.decision}</span>
                 <span className="text-muted-foreground w-16">{s.symbol}</span>
-                <span className="numeric text-foreground">
-                  {fmtPrice(s.price, 4)}
-                </span>
+                <span className="numeric text-foreground">{fmtPrice(s.price, 4)}</span>
               </div>
-              <div className="numeric text-xs text-muted-foreground">
-                {fmtPct(s.confidence)}
-              </div>
+              <div className="numeric text-xs text-muted-foreground">{fmtPct(s.confidence)}</div>
             </div>
           );
         })}

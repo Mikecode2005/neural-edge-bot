@@ -169,28 +169,55 @@ export const analyzeMarket = createServerFn({ method: "POST" })
         volatility_regime: analysis.volatilityRegime,
         htf_trend_15m: analysis.htfTrend15m,
         htf_structure_5m: analysis.htfStructure5m,
-        active_ob: analysis.activeOB ? {
-          kind: analysis.activeOB.kind,
-          top: analysis.activeOB.top,
-          bottom: analysis.activeOB.bottom,
-          volume_proxy: analysis.activeOB.volumeProxy
-        } : null,
-        active_fvg: analysis.activeFVG ? {
-          kind: analysis.activeFVG.kind,
-          top: analysis.activeFVG.top,
-          bottom: analysis.activeFVG.bottom,
-          size: analysis.activeFVG.size
-        } : null,
+        active_ob: analysis.activeOB
+          ? {
+              kind: analysis.activeOB.kind,
+              top: analysis.activeOB.top,
+              bottom: analysis.activeOB.bottom,
+              volume_proxy: analysis.activeOB.volumeProxy,
+            }
+          : null,
+        active_fvg: analysis.activeFVG
+          ? {
+              kind: analysis.activeFVG.kind,
+              top: analysis.activeFVG.top,
+              bottom: analysis.activeFVG.bottom,
+              size: analysis.activeFVG.size,
+            }
+          : null,
         bollinger: { upper: analysis.bollUpper, lower: analysis.bollLower, mid: analysis.bollMid },
       },
       strategy_signals: {
-        ob_fvg: { decision: analysis.decision, confidence: analysis.confidence, gates_failed: analysis.gateFailures ?? [], rationale: analysis.rationale },
-        momentum: { decision: mo.decision, confidence: mo.confidence, gates_failed: mo.gateFailures ?? [], rationale: mo.rationale },
-        mean_reversion: { decision: mr.decision, confidence: mr.confidence, gates_failed: mr.gateFailures ?? [], rationale: mr.rationale },
-        best_pick: { strategy: multi.strategy, decision: multi.decision, confidence: multi.confidence },
+        ob_fvg: {
+          decision: analysis.decision,
+          confidence: analysis.confidence,
+          gates_failed: analysis.gateFailures ?? [],
+          rationale: analysis.rationale,
+        },
+        momentum: {
+          decision: mo.decision,
+          confidence: mo.confidence,
+          gates_failed: mo.gateFailures ?? [],
+          rationale: mo.rationale,
+        },
+        mean_reversion: {
+          decision: mr.decision,
+          confidence: mr.confidence,
+          gates_failed: mr.gateFailures ?? [],
+          rationale: mr.rationale,
+        },
+        best_pick: {
+          strategy: multi.strategy,
+          decision: multi.decision,
+          confidence: multi.confidence,
+        },
       },
       recent_candles: recent.map((c) => ({
-        t: c.epoch, o: c.open, h: c.high, l: c.low, c: c.close,
+        t: c.epoch,
+        o: c.open,
+        h: c.high,
+        l: c.low,
+        c: c.close,
       })),
       lessons_learned: lessons || "(none yet)",
     });
@@ -207,12 +234,13 @@ export const analyzeMarket = createServerFn({ method: "POST" })
 
     const classification = parsed.classification || "B";
     const rawDirection = parsed.direction || "NONE";
-    
+
     // Execute trade only if class A+ or A
-    const direction = ["A+", "A"].includes(classification) && ["CALL", "PUT"].includes(rawDirection)
-      ? rawDirection
-      : "NONE";
-      
+    const direction =
+      ["A+", "A"].includes(classification) && ["CALL", "PUT"].includes(rawDirection)
+        ? rawDirection
+        : "NONE";
+
     const confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
 
     // Save explaining reasoning prefix

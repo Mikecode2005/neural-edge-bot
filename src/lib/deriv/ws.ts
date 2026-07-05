@@ -5,8 +5,7 @@
  */
 
 const APP_ID =
-  (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_DERIV_APP_ID) ||
-  "1089"; // public fallback for read-only public feeds
+  (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_DERIV_APP_ID) || "1089"; // public fallback for read-only public feeds
 
 export interface DerivTick {
   symbol: string;
@@ -64,9 +63,7 @@ class DerivWS {
         this.ws = null;
         this.authorizedToken = null;
         // Drop pending; subs require resubscribe by caller
-        this.pending.forEach((cb) =>
-          cb({ error: { message: "ws closed" } })
-        );
+        this.pending.forEach((cb) => cb({ error: { message: "ws closed" } }));
         this.pending.clear();
         this.subs.clear();
       };

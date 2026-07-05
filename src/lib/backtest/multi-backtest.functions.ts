@@ -86,8 +86,10 @@ export const runMultiBacktest = createServerFn({ method: "POST" })
             dir: open.dir,
             entryEpoch: open.entryEpoch,
             exitEpoch: c.epoch,
-            entry: open.entry, exit,
-            sl: open.sl, tp: open.tp,
+            entry: open.entry,
+            exit,
+            sl: open.sl,
+            tp: open.tp,
             score: open.score,
             rMultiple: rMult,
             outcome: rMult > 0 ? "win" : rMult < 0 ? "loss" : "expired",
@@ -118,12 +120,40 @@ export const runMultiBacktest = createServerFn({ method: "POST" })
     }
 
     // Per-strategy aggregation
-    const byStrategy: Record<string, { trades: number; wins: number; losses: number; grossR: number; grossLossR: number; netR: number; avgR: number; winRate: number; profitFactor: number | null }> = {};
+    const byStrategy: Record<
+      string,
+      {
+        trades: number;
+        wins: number;
+        losses: number;
+        grossR: number;
+        grossLossR: number;
+        netR: number;
+        avgR: number;
+        winRate: number;
+        profitFactor: number | null;
+      }
+    > = {};
     for (const t of trades) {
-      const s = (byStrategy[t.strategy] ??= { trades: 0, wins: 0, losses: 0, grossR: 0, grossLossR: 0, netR: 0, avgR: 0, winRate: 0, profitFactor: null });
+      const s = (byStrategy[t.strategy] ??= {
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        grossR: 0,
+        grossLossR: 0,
+        netR: 0,
+        avgR: 0,
+        winRate: 0,
+        profitFactor: null,
+      });
       s.trades++;
-      if (t.rMultiple > 0) { s.wins++; s.grossR += t.rMultiple; }
-      else { s.losses++; s.grossLossR += Math.abs(t.rMultiple); }
+      if (t.rMultiple > 0) {
+        s.wins++;
+        s.grossR += t.rMultiple;
+      } else {
+        s.losses++;
+        s.grossLossR += Math.abs(t.rMultiple);
+      }
       s.netR += t.rMultiple;
     }
     for (const s of Object.values(byStrategy)) {
@@ -133,12 +163,13 @@ export const runMultiBacktest = createServerFn({ method: "POST" })
     }
 
     // Aggregate + max drawdown (in R)
-    let peak = 0, maxDd = 0;
+    let peak = 0,
+      maxDd = 0;
     for (const p of equity) {
       if (p.equity > peak) peak = p.equity;
       if (peak - p.equity > maxDd) maxDd = peak - p.equity;
     }
-    const totalWins = trades.filter(t => t.rMultiple > 0).length;
+    const totalWins = trades.filter((t) => t.rMultiple > 0).length;
 
     return {
       symbol: data.symbol,

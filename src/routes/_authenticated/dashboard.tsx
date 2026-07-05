@@ -349,229 +349,230 @@ function Dashboard() {
       <Toaster theme="dark" position="top-right" richColors />
       <AppNav />
       <div className="px-6 py-6 max-w-[1600px] mx-auto">
-
-      <header className="flex flex-wrap items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-3">
-          <div className="size-9 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
-            <Brain className="size-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight">AI Trading Workstation</h1>
-            <p className="text-xs text-muted-foreground">
-              Order Block + Fair Value Gap · Qwen 2.5 7B · Deriv synthetics
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 text-xs">
-          {connected ? (
-            <>
-              <Badge
-                variant={activeType === "demo" ? "secondary" : "destructive"}
-                className="gap-1"
-              >
-                <Power className="size-3" />
-                {activeType === "demo" ? "DEMO" : "REAL"} · {activeLogin}
-              </Badge>
-              {accounts.length > 1 && (
-                <select
-                  aria-label="Select active Deriv account"
-                  className="bg-card border border-border rounded-md px-2 py-1 text-xs"
-                  value={activeLogin ?? ""}
-                  onChange={(e) => onSwitchAccount(e.target.value)}
-                >
-                  {accounts.map((a) => (
-                    <option key={a.loginid} value={a.loginid}>
-                      {a.loginid} ({a.account_type})
-                    </option>
-                  ))}
-                </select>
-              )}
-              <Button size="sm" variant="ghost" onClick={onDisconnect}>
-                Unlink
-              </Button>
-            </>
-          ) : (
-            <Button size="sm" onClick={onConnectDeriv} className="gap-1.5">
-              <Plug className="size-3.5" /> Connect Deriv
-            </Button>
-          )}
-          <Button size="sm" variant="ghost" onClick={onSignOut} className="gap-1">
-            <LogOut className="size-3.5" /> Sign out
-          </Button>
-        </div>
-      </header>
-
-      {!connected && (
-        <div className="glass rounded-xl p-4 mb-4 border border-primary/30 bg-primary/5">
-          <div className="flex items-center justify-between gap-4 flex-wrap">
+        <header className="flex flex-wrap items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="size-9 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
+              <Brain className="size-5 text-primary" />
+            </div>
             <div>
-              <p className="text-sm font-medium">Link your Deriv account to start trading</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Live market data shows below using public feeds. Connect Deriv to see balance and
-                place real (or demo) trades.
+              <h1 className="text-lg font-semibold tracking-tight">AI Trading Workstation</h1>
+              <p className="text-xs text-muted-foreground">
+                Order Block + Fair Value Gap · Qwen 2.5 7B · Deriv synthetics
               </p>
             </div>
-            <Button onClick={onConnectDeriv} className="gap-1.5">
-              <Plug className="size-3.5" /> Connect with Deriv
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            {connected ? (
+              <>
+                <Badge
+                  variant={activeType === "demo" ? "secondary" : "destructive"}
+                  className="gap-1"
+                >
+                  <Power className="size-3" />
+                  {activeType === "demo" ? "DEMO" : "REAL"} · {activeLogin}
+                </Badge>
+                {accounts.length > 1 && (
+                  <select
+                    aria-label="Select active Deriv account"
+                    className="bg-card border border-border rounded-md px-2 py-1 text-xs"
+                    value={activeLogin ?? ""}
+                    onChange={(e) => onSwitchAccount(e.target.value)}
+                  >
+                    {accounts.map((a) => (
+                      <option key={a.loginid} value={a.loginid}>
+                        {a.loginid} ({a.account_type})
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <Button size="sm" variant="ghost" onClick={onDisconnect}>
+                  Unlink
+                </Button>
+              </>
+            ) : (
+              <Button size="sm" onClick={onConnectDeriv} className="gap-1.5">
+                <Plug className="size-3.5" /> Connect Deriv
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={onSignOut} className="gap-1">
+              <LogOut className="size-3.5" /> Sign out
             </Button>
           </div>
-        </div>
-      )}
+        </header>
 
-      <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <MetricCard
-          label={connected ? `${activeType.toUpperCase()} Balance` : "Balance"}
-          value={balance != null ? fmtMoney(balance) : connected ? "…" : "—"}
-          sublabel={connected ? `${activeCurrency} · ${activeLogin}` : "Not connected"}
-          icon={<Wallet className="size-3.5" />}
-        />
-        <MetricCard
-          label="Live Price"
-          value={livePrice != null ? livePrice.toFixed(4) : "—"}
-          sublabel={symbol}
-          icon={<Activity className="size-3.5" />}
-        />
-        <MetricCard
-          label="AI Confidence"
-          value={ai ? fmtPct(ai.confidence) : analysis ? fmtPct(analysis.confidence) : "—"}
-          sublabel={`Signal · ${ai?.direction ?? analysis?.decision ?? "—"}`}
-          tone={
-            ai?.direction === "CALL" || analysis?.decision === "BUY"
-              ? "bull"
-              : ai?.direction === "PUT" || analysis?.decision === "SELL"
-                ? "bear"
-                : "warn"
-          }
-          icon={<Brain className="size-3.5" />}
-        />
-        <MetricCard
-          label="Market Trend"
-          value={analysis?.trend?.toUpperCase() ?? "—"}
-          sublabel={
-            analysis ? `EMA20 ${analysis.ema20.toFixed(4)} · RSI ${analysis.rsi14.toFixed(0)}` : ""
-          }
-          tone={analysis?.trend === "up" ? "bull" : "bear"}
-          icon={<BarChart3 className="size-3.5" />}
-        />
-      </section>
-
-      <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
-        <SymbolSelector value={symbol} onChange={setSymbol} />
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Chart</span>
-          <select
-            value={chartType}
-            onChange={(e) => setChartType(e.target.value as any)}
-            className="bg-card border border-border rounded-md px-2 py-1.5 text-xs"
-            aria-label="Chart type"
-          >
-            <option value="line">Line</option>
-            <option value="prediction">Line + AI prediction</option>
-            <option value="candle">Candle (coming soon)</option>
-          </select>
-        </div>
-      </div>
-
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
-          <PriceChart
-            candles={candles}
-            analysis={chartType === "line" ? null : analysis}
-            livePrice={livePrice}
-          />
-        </div>
-
-        <div className="glass rounded-xl p-4 flex flex-col gap-3 min-h-[420px]">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Cpu className="size-4 text-primary" />
-              <h3 className="text-sm font-semibold">AI Decision</h3>
+        {!connected && (
+          <div className="glass rounded-xl p-4 mb-4 border border-primary/30 bg-primary/5">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <p className="text-sm font-medium">Link your Deriv account to start trading</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Live market data shows below using public feeds. Connect Deriv to see balance and
+                  place real (or demo) trades.
+                </p>
+              </div>
+              <Button onClick={onConnectDeriv} className="gap-1.5">
+                <Plug className="size-3.5" /> Connect with Deriv
+              </Button>
             </div>
-            <Badge variant="outline" className="text-[10px]">
-              HF Router · Qwen 2.5 7B
-            </Badge>
+          </div>
+        )}
+
+        <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <MetricCard
+            label={connected ? `${activeType.toUpperCase()} Balance` : "Balance"}
+            value={balance != null ? fmtMoney(balance) : connected ? "…" : "—"}
+            sublabel={connected ? `${activeCurrency} · ${activeLogin}` : "Not connected"}
+            icon={<Wallet className="size-3.5" />}
+          />
+          <MetricCard
+            label="Live Price"
+            value={livePrice != null ? livePrice.toFixed(4) : "—"}
+            sublabel={symbol}
+            icon={<Activity className="size-3.5" />}
+          />
+          <MetricCard
+            label="AI Confidence"
+            value={ai ? fmtPct(ai.confidence) : analysis ? fmtPct(analysis.confidence) : "—"}
+            sublabel={`Signal · ${ai?.direction ?? analysis?.decision ?? "—"}`}
+            tone={
+              ai?.direction === "CALL" || analysis?.decision === "BUY"
+                ? "bull"
+                : ai?.direction === "PUT" || analysis?.decision === "SELL"
+                  ? "bear"
+                  : "warn"
+            }
+            icon={<Brain className="size-3.5" />}
+          />
+          <MetricCard
+            label="Market Trend"
+            value={analysis?.trend?.toUpperCase() ?? "—"}
+            sublabel={
+              analysis
+                ? `EMA20 ${analysis.ema20.toFixed(4)} · RSI ${analysis.rsi14.toFixed(0)}`
+                : ""
+            }
+            tone={analysis?.trend === "up" ? "bull" : "bear"}
+            icon={<BarChart3 className="size-3.5" />}
+          />
+        </section>
+
+        <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
+          <SymbolSelector value={symbol} onChange={setSymbol} />
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Chart</span>
+            <select
+              value={chartType}
+              onChange={(e) => setChartType(e.target.value as any)}
+              className="bg-card border border-border rounded-md px-2 py-1.5 text-xs"
+              aria-label="Chart type"
+            >
+              <option value="line">Line</option>
+              <option value="prediction">Line + AI prediction</option>
+              <option value="candle">Candle (coming soon)</option>
+            </select>
+          </div>
+        </div>
+
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2">
+            <PriceChart
+              candles={candles}
+              analysis={chartType === "line" ? null : analysis}
+              livePrice={livePrice}
+            />
           </div>
 
-          <Button onClick={onAnalyze} disabled={aiBusy || !analysis} className="gap-1.5">
-            <Sparkles className="size-3.5" />
-            {aiBusy ? "Analyzing…" : "Analyze market with AI"}
-          </Button>
-
-          {ai ? (
-            <div className="space-y-3 text-sm">
+          <div className="glass rounded-xl p-4 flex flex-col gap-3 min-h-[420px]">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Badge
-                  variant={
-                    ai.direction === "CALL"
-                      ? "default"
-                      : ai.direction === "PUT"
-                        ? "destructive"
-                        : "secondary"
-                  }
-                >
-                  {ai.direction}
-                </Badge>
-                <span className="text-xs text-muted-foreground">
-                  Confidence {(ai.confidence * 100).toFixed(0)}%
-                </span>
-                {ai.lesson_added && (
-                  <Badge variant="outline" className="text-[10px]">
-                    + lesson
+                <Cpu className="size-4 text-primary" />
+                <h3 className="text-sm font-semibold">AI Decision</h3>
+              </div>
+              <Badge variant="outline" className="text-[10px]">
+                HF Router · Qwen 2.5 7B
+              </Badge>
+            </div>
+
+            <Button onClick={onAnalyze} disabled={aiBusy || !analysis} className="gap-1.5">
+              <Sparkles className="size-3.5" />
+              {aiBusy ? "Analyzing…" : "Analyze market with AI"}
+            </Button>
+
+            {ai ? (
+              <div className="space-y-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={
+                      ai.direction === "CALL"
+                        ? "default"
+                        : ai.direction === "PUT"
+                          ? "destructive"
+                          : "secondary"
+                    }
+                  >
+                    {ai.direction}
                   </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    Confidence {(ai.confidence * 100).toFixed(0)}%
+                  </span>
+                  {ai.lesson_added && (
+                    <Badge variant="outline" className="text-[10px]">
+                      + lesson
+                    </Badge>
+                  )}
+                </div>
+
+                <p className="text-xs text-muted-foreground leading-relaxed border-l-2 border-primary/40 pl-3">
+                  {ai.reasoning || "No reasoning."}
+                </p>
+
+                {ai.direction !== "NONE" && (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-md bg-card/50 p-2 border border-border">
+                      <p className="text-muted-foreground">Stake</p>
+                      <p className="font-mono">{ai.stake?.toFixed(2) ?? "—"}</p>
+                    </div>
+                    <div className="rounded-md bg-card/50 p-2 border border-border">
+                      <p className="text-muted-foreground">Duration</p>
+                      <p className="font-mono">
+                        {ai.duration} {ai.duration_unit}
+                      </p>
+                    </div>
+                    <div className="rounded-md bg-card/50 p-2 border border-border">
+                      <p className="text-muted-foreground">Take Profit</p>
+                      <p className="font-mono">{ai.take_profit?.toFixed(4) ?? "—"}</p>
+                    </div>
+                    <div className="rounded-md bg-card/50 p-2 border border-border">
+                      <p className="text-muted-foreground">Stop Loss</p>
+                      <p className="font-mono">{ai.stop_loss?.toFixed(4) ?? "—"}</p>
+                    </div>
+                  </div>
+                )}
+
+                {ai.direction !== "NONE" && (
+                  <Button
+                    onClick={onExecute}
+                    disabled={tradeBusy || !connected}
+                    variant={ai.direction === "CALL" ? "default" : "destructive"}
+                    className="gap-1.5"
+                  >
+                    <Zap className="size-3.5" />
+                    {tradeBusy
+                      ? "Placing…"
+                      : connected
+                        ? `Execute ${ai.direction} on ${activeType.toUpperCase()}`
+                        : "Connect Deriv to execute"}
+                  </Button>
                 )}
               </div>
-
-              <p className="text-xs text-muted-foreground leading-relaxed border-l-2 border-primary/40 pl-3">
-                {ai.reasoning || "No reasoning."}
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Click "Analyze" — the frontend calls Hugging Face Router directly with your Vite HF
+                token, then Qwen returns a structured prediction plus explanation.
               </p>
-
-              {ai.direction !== "NONE" && (
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="rounded-md bg-card/50 p-2 border border-border">
-                    <p className="text-muted-foreground">Stake</p>
-                    <p className="font-mono">{ai.stake?.toFixed(2) ?? "—"}</p>
-                  </div>
-                  <div className="rounded-md bg-card/50 p-2 border border-border">
-                    <p className="text-muted-foreground">Duration</p>
-                    <p className="font-mono">
-                      {ai.duration} {ai.duration_unit}
-                    </p>
-                  </div>
-                  <div className="rounded-md bg-card/50 p-2 border border-border">
-                    <p className="text-muted-foreground">Take Profit</p>
-                    <p className="font-mono">{ai.take_profit?.toFixed(4) ?? "—"}</p>
-                  </div>
-                  <div className="rounded-md bg-card/50 p-2 border border-border">
-                    <p className="text-muted-foreground">Stop Loss</p>
-                    <p className="font-mono">{ai.stop_loss?.toFixed(4) ?? "—"}</p>
-                  </div>
-                </div>
-              )}
-
-              {ai.direction !== "NONE" && (
-                <Button
-                  onClick={onExecute}
-                  disabled={tradeBusy || !connected}
-                  variant={ai.direction === "CALL" ? "default" : "destructive"}
-                  className="gap-1.5"
-                >
-                  <Zap className="size-3.5" />
-                  {tradeBusy
-                    ? "Placing…"
-                    : connected
-                      ? `Execute ${ai.direction} on ${activeType.toUpperCase()}`
-                      : "Connect Deriv to execute"}
-                </Button>
-              )}
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Click "Analyze" — the frontend calls Hugging Face Router directly with your Vite HF
-              token, then Qwen returns a structured prediction plus explanation.
-            </p>
-          )}
-        </div>
-      </section>
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );

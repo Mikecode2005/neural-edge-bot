@@ -4,7 +4,15 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockInitialize, mockLogin, mockShutdown, mockAccountInfo, mockPositionsGet, mockOrderSend, mockCopyRatesFrom } = vi.hoisted(() => ({
+const {
+  mockInitialize,
+  mockLogin,
+  mockShutdown,
+  mockAccountInfo,
+  mockPositionsGet,
+  mockOrderSend,
+  mockCopyRatesFrom,
+} = vi.hoisted(() => ({
   mockInitialize: vi.fn(),
   mockLogin: vi.fn(),
   mockShutdown: vi.fn(),
@@ -51,7 +59,9 @@ describe("Mt5Client", () => {
     it("should throw on login failure", async () => {
       mockInitialize.mockResolvedValue(undefined);
       mockLogin.mockResolvedValue(false);
-      await expect(client.initialize({ login: 0, password: "", server: "" })).rejects.toThrow("MT5 login failed");
+      await expect(client.initialize({ login: 0, password: "", server: "" })).rejects.toThrow(
+        "MT5 login failed",
+      );
       expect(client.connected).toBe(false);
     });
   });

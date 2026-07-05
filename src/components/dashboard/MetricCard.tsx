@@ -22,12 +22,8 @@ export function MetricCard({ label, value, sublabel, tone = "default", icon }: P
         <span>{label}</span>
         {icon}
       </div>
-      <div className={`numeric text-2xl font-semibold ${toneClass[tone]}`}>
-        {value}
-      </div>
-      {sublabel && (
-        <div className="text-xs text-muted-foreground">{sublabel}</div>
-      )}
+      <div className={`numeric text-2xl font-semibold ${toneClass[tone]}`}>{value}</div>
+      {sublabel && <div className="text-xs text-muted-foreground">{sublabel}</div>}
     </div>
   );
 }

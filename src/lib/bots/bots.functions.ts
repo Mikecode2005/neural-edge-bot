@@ -99,9 +99,7 @@ export const listBotActivity = createServerFn({ method: "GET" })
 
 export const listOpenBotPositions = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) =>
-    z.object({ bot_id: z.string().uuid() }).parse(d),
-  )
+  .inputValidator((d: unknown) => z.object({ bot_id: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data: rows, error } = await (supabaseAdmin as any)
@@ -332,7 +330,15 @@ export const updateBotBalance = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("bot_runs")
-      .update({ account_balance: data.account_balance, total_pnl: 0, total_trades: 0, wins: 0, losses: 0, locked_stake: 0, floating_pnl: 0 } as any) // reset statistics when updating balance
+      .update({
+        account_balance: data.account_balance,
+        total_pnl: 0,
+        total_trades: 0,
+        wins: 0,
+        losses: 0,
+        locked_stake: 0,
+        floating_pnl: 0,
+      } as any) // reset statistics when updating balance
       .eq("id", data.id)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
@@ -377,7 +383,15 @@ export const resetBotStats = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await supabaseAdmin
       .from("bot_runs")
-      .update({ total_pnl: 0, total_trades: 0, wins: 0, losses: 0, locked_stake: 0, floating_pnl: 0, last_error: null } as any)
+      .update({
+        total_pnl: 0,
+        total_trades: 0,
+        wins: 0,
+        losses: 0,
+        locked_stake: 0,
+        floating_pnl: 0,
+        last_error: null,
+      } as any)
       .eq("id", data.id)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);

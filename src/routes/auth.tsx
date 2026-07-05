@@ -16,7 +16,10 @@ export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
       { title: "Sign in — AI Trading Workstation" },
-      { name: "description", content: "Sign in to the AI-powered autonomous Deriv trading workstation." },
+      {
+        name: "description",
+        content: "Sign in to the AI-powered autonomous Deriv trading workstation.",
+      },
     ],
   }),
   component: AuthPage,
@@ -140,7 +143,9 @@ function AuthPage() {
           )}
 
           <div className="relative my-4">
-            <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t" />
+            </div>
             <div className="relative flex justify-center text-[10px] uppercase tracking-wider">
               <span className="bg-card px-2 text-muted-foreground">or email</span>
             </div>
@@ -148,12 +153,29 @@ function AuthPage() {
 
           <form onSubmit={onEmailSubmit} className="space-y-3">
             <div>
-              <Label htmlFor="email" className="text-xs">Email</Label>
-              <Input id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+              <Label htmlFor="email" className="text-xs">
+                Email
+              </Label>
+              <Input
+                id="email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
             </div>
             <div>
-              <Label htmlFor="password" className="text-xs">Password</Label>
-              <Input id="password" type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
+              <Label htmlFor="password" className="text-xs">
+                Password
+              </Label>
+              <Input
+                id="password"
+                type="password"
+                required
+                minLength={6}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
             </div>
             <Button type="submit" disabled={busy} className="w-full">
               {busy ? "…" : mode === "signin" ? "Sign in" : "Create account"}
@@ -169,7 +191,11 @@ function AuthPage() {
         </div>
 
         <p className="mt-6 text-center text-[11px] text-muted-foreground">
-          By continuing you agree to trade only on demo accounts until you explicitly enable real-money trading. <Link to="/" className="underline">Home</Link>
+          By continuing you agree to trade only on demo accounts until you explicitly enable
+          real-money trading.{" "}
+          <Link to="/" className="underline">
+            Home
+          </Link>
         </p>
       </div>
     </div>

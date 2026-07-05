@@ -16,8 +16,8 @@ describe("requireLiveCandles", () => {
   });
 
   it("throws when the live feed does not provide enough candles", () => {
-    expect(() => requireLiveCandles([{ epoch: 1, open: 100, high: 101, low: 99, close: 100 }], 61)).toThrow(
-      "Live candle feed unavailable",
-    );
+    expect(() =>
+      requireLiveCandles([{ epoch: 1, open: 100, high: 101, low: 99, close: 100 }], 61),
+    ).toThrow("Live candle feed unavailable");
   });
 });

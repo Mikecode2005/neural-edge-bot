@@ -122,9 +122,7 @@ export const updateSettings = createServerFn({ method: "POST" })
         default_interval_seconds: z.number().int().min(10).max(3600).optional(),
         account_mode: z.enum(["demo", "real"]).optional(),
         custom_doctrine: z.string().nullable().optional(),
-        confidence_stake_curve: z
-          .array(z.object({ min: z.number(), pct: z.number() }))
-          .optional(),
+        confidence_stake_curve: z.array(z.object({ min: z.number(), pct: z.number() })).optional(),
       })
       .parse(d),
   )

@@ -56,7 +56,8 @@ export function findSwings(candles: Candle[], left = 3, right = 3) {
   const highs: { val: number; idx: number }[] = [];
   const lows: { val: number; idx: number }[] = [];
   for (let i = left; i < candles.length - right; i++) {
-    let sh = true, sl = true;
+    let sh = true,
+      sl = true;
     for (let j = 1; j <= left; j++) {
       if (candles[i - j].high >= candles[i].high) sh = false;
       if (candles[i - j].low <= candles[i].low) sl = false;
@@ -83,33 +84,62 @@ export interface RegimeResult {
 
 export function detectRegime(base: LiveAnalysis, price: number): RegimeResult {
   const atrPct = pctAtr(base.atr14, price);
-  const bbWidth = base.bollUpper != null && base.bollLower != null && base.bollMid && base.bollMid > 0
-    ? ((base.bollUpper - base.bollLower) / base.bollMid) * 100
-    : 0;
+  const bbWidth =
+    base.bollUpper != null && base.bollLower != null && base.bollMid && base.bollMid > 0
+      ? ((base.bollUpper - base.bollLower) / base.bollMid) * 100
+      : 0;
   const htfTrend = base.htfTrend15m;
 
   // Compression: very tight BB + low ATR%
   if (bbWidth < 0.4 && atrPct < 0.05) {
-    return { regime: "compression", adx: base.adx14, atrPct, bbWidthPct: bbWidth, htfTrend, reason: "BB tight + low ATR%" };
+    return {
+      regime: "compression",
+      adx: base.adx14,
+      atrPct,
+      bbWidthPct: bbWidth,
+      htfTrend,
+      reason: "BB tight + low ATR%",
+    };
   }
   // Range: ADX flat AND BB normal
   if (base.adx14 < 20) {
-    return { regime: "range", adx: base.adx14, atrPct, bbWidthPct: bbWidth, htfTrend, reason: "ADX < 20" };
+    return {
+      regime: "range",
+      adx: base.adx14,
+      atrPct,
+      bbWidthPct: bbWidth,
+      htfTrend,
+      reason: "ADX < 20",
+    };
   }
   // Reversal proxy: strong ADX but 1m vs HTF diverge + recent CHOCH
   if (base.adx14 >= 20 && base.choch && base.trend !== htfTrend) {
-    return { regime: "reversal", adx: base.adx14, atrPct, bbWidthPct: bbWidth, htfTrend, reason: "CHOCH + HTF divergence" };
+    return {
+      regime: "reversal",
+      adx: base.adx14,
+      atrPct,
+      bbWidthPct: bbWidth,
+      htfTrend,
+      reason: "CHOCH + HTF divergence",
+    };
   }
   // Trending
   const dir: MarketRegime = base.trend === "up" ? "trend_up" : "trend_down";
-  return { regime: dir, adx: base.adx14, atrPct, bbWidthPct: bbWidth, htfTrend, reason: `ADX ${base.adx14.toFixed(0)} + EMA stack` };
+  return {
+    regime: dir,
+    adx: base.adx14,
+    atrPct,
+    bbWidthPct: bbWidth,
+    htfTrend,
+    reason: `ADX ${base.adx14.toFixed(0)} + EMA stack`,
+  };
 }
 
 // ── Individual strategy signals (compact, gate-based) ─────────────────
 interface StratSignal {
   strategy: StrategyKind;
   dir: "BUY" | "SELL" | "WAIT";
-  base: number;         // base contribution 0–60
+  base: number; // base contribution 0–60
   reason: string;
   entry?: number;
   sl?: number;
@@ -125,80 +155,154 @@ function sigMsnrCrt(candles: Candle[], base: LiveAnalysis, price: number): Strat
   const bear = base.htfTrend15m === "down" && base.trend === "down";
   const nearLow = lows.at(-1) && Math.abs(price - lows.at(-1)!.val) <= 0.6 * base.atr14;
   const nearHigh = highs.at(-1) && Math.abs(price - highs.at(-1)!.val) <= 0.6 * base.atr14;
-  const reactionUp = lastN.some(c => (c.close - c.open) / ((c.high - c.low) || 1e-9) > 0.5);
-  const reactionDn = lastN.some(c => (c.close - c.open) / ((c.high - c.low) || 1e-9) < -0.5);
+  const reactionUp = lastN.some((c) => (c.close - c.open) / (c.high - c.low || 1e-9) > 0.5);
+  const reactionDn = lastN.some((c) => (c.close - c.open) / (c.high - c.low || 1e-9) < -0.5);
   if (bull && nearLow && reactionUp) {
-    return { strategy: "msnr-crt", dir: "BUY", base: 45, reason: "MSNR: HTF up + reaction off swing low", entry: price, sl: price - 1.5 * base.atr14, tp: price + 2.5 * base.atr14 };
+    return {
+      strategy: "msnr-crt",
+      dir: "BUY",
+      base: 45,
+      reason: "MSNR: HTF up + reaction off swing low",
+      entry: price,
+      sl: price - 1.5 * base.atr14,
+      tp: price + 2.5 * base.atr14,
+    };
   }
   if (bear && nearHigh && reactionDn) {
-    return { strategy: "msnr-crt", dir: "SELL", base: 45, reason: "MSNR: HTF down + reaction off swing high", entry: price, sl: price + 1.5 * base.atr14, tp: price - 2.5 * base.atr14 };
+    return {
+      strategy: "msnr-crt",
+      dir: "SELL",
+      base: 45,
+      reason: "MSNR: HTF down + reaction off swing high",
+      entry: price,
+      sl: price + 1.5 * base.atr14,
+      tp: price - 2.5 * base.atr14,
+    };
   }
-  return { strategy: "msnr-crt", dir: "WAIT", base: 0, reason: "MSNR: no bias-aligned reaction at range extreme" };
+  return {
+    strategy: "msnr-crt",
+    dir: "WAIT",
+    base: 0,
+    reason: "MSNR: no bias-aligned reaction at range extreme",
+  };
 }
 
 // 2. APA — Analysis → POI → Action
 function sigApa(candles: Candle[], base: LiveAnalysis, price: number): StratSignal {
   // POI = active OB midpoint, invalidation = OB extreme.
-  if (!base.activeOB || !base.activeFVG) return { strategy: "apa", dir: "WAIT", base: 0, reason: "APA: no POI" };
+  if (!base.activeOB || !base.activeFVG)
+    return { strategy: "apa", dir: "WAIT", base: 0, reason: "APA: no POI" };
   const isBull = base.activeOB.kind === "bullish";
   const inZone = price >= base.activeOB.bottom && price <= base.activeOB.top;
   if (!inZone) return { strategy: "apa", dir: "WAIT", base: 0, reason: "APA: price not at POI" };
   // 50% retracement of last impulse
   const lastImpulse = candles.slice(-10);
-  const hi = Math.max(...lastImpulse.map(c => c.high));
-  const lo = Math.min(...lastImpulse.map(c => c.low));
+  const hi = Math.max(...lastImpulse.map((c) => c.high));
+  const lo = Math.min(...lastImpulse.map((c) => c.low));
   const mid = (hi + lo) / 2;
   const near50 = Math.abs(price - mid) <= 0.5 * base.atr14;
-  if (!near50) return { strategy: "apa", dir: "WAIT", base: 10, reason: "APA: POI touched but not 50% retrace" };
+  if (!near50)
+    return {
+      strategy: "apa",
+      dir: "WAIT",
+      base: 10,
+      reason: "APA: POI touched but not 50% retrace",
+    };
   const dir = isBull ? "BUY" : "SELL";
   const entry = price;
-  const sl = isBull ? base.activeOB.bottom - 0.5 * base.atr14 : base.activeOB.top + 0.5 * base.atr14;
+  const sl = isBull
+    ? base.activeOB.bottom - 0.5 * base.atr14
+    : base.activeOB.top + 0.5 * base.atr14;
   const risk = Math.abs(entry - sl);
   const tp = isBull ? entry + 2 * risk : entry - 2 * risk;
-  return { strategy: "apa", dir, base: 42, reason: "APA: POI + 50% retrace confluence", entry, sl, tp };
+  return {
+    strategy: "apa",
+    dir,
+    base: 42,
+    reason: "APA: POI + 50% retrace confluence",
+    entry,
+    sl,
+    tp,
+  };
 }
 
 // 3. Liquidity Sweep / Turtle Soup
 function sigLiquiditySweep(candles: Candle[], base: LiveAnalysis, price: number): StratSignal {
   const { highs, lows } = findSwings(candles, 3, 3);
   const last = candles.at(-1)!;
-  const recentHi = highs.slice(-3).map(h => h.val);
-  const recentLo = lows.slice(-3).map(l => l.val);
+  const recentHi = highs.slice(-3).map((h) => h.val);
+  const recentLo = lows.slice(-3).map((l) => l.val);
   // Bearish sweep: wick above recent high, close back below
-  const swept_high = recentHi.some(v => last.high > v && last.close < v);
-  const swept_low = recentLo.some(v => last.low < v && last.close > v);
+  const swept_high = recentHi.some((v) => last.high > v && last.close < v);
+  const swept_low = recentLo.some((v) => last.low < v && last.close > v);
   if (swept_low) {
-    return { strategy: "liquidity-sweep", dir: "BUY", base: 50, reason: "Sweep of equal lows + reclaim", entry: price, sl: last.low - 0.3 * base.atr14, tp: price + 2.5 * base.atr14 };
+    return {
+      strategy: "liquidity-sweep",
+      dir: "BUY",
+      base: 50,
+      reason: "Sweep of equal lows + reclaim",
+      entry: price,
+      sl: last.low - 0.3 * base.atr14,
+      tp: price + 2.5 * base.atr14,
+    };
   }
   if (swept_high) {
-    return { strategy: "liquidity-sweep", dir: "SELL", base: 50, reason: "Sweep of equal highs + rejection", entry: price, sl: last.high + 0.3 * base.atr14, tp: price - 2.5 * base.atr14 };
+    return {
+      strategy: "liquidity-sweep",
+      dir: "SELL",
+      base: 50,
+      reason: "Sweep of equal highs + rejection",
+      entry: price,
+      sl: last.high + 0.3 * base.atr14,
+      tp: price - 2.5 * base.atr14,
+    };
   }
-  return { strategy: "liquidity-sweep", dir: "WAIT", base: 0, reason: "No liquidity sweep detected" };
+  return {
+    strategy: "liquidity-sweep",
+    dir: "WAIT",
+    base: 0,
+    reason: "No liquidity sweep detected",
+  };
 }
 
 // 4. OB + FVG — use existing analyze() output
 function sigObFvg(base: LiveAnalysis): StratSignal {
-  if (base.decision === "WAIT") return { strategy: "ob-fvg", dir: "WAIT", base: 0, reason: "OB+FVG: " + (base.rationale || "gates failed") };
+  if (base.decision === "WAIT")
+    return {
+      strategy: "ob-fvg",
+      dir: "WAIT",
+      base: 0,
+      reason: "OB+FVG: " + (base.rationale || "gates failed"),
+    };
   return {
     strategy: "ob-fvg",
     dir: base.decision as "BUY" | "SELL",
     base: 45,
     reason: "OB+FVG hard gates passed",
-    entry: base.entry, sl: base.sl, tp: base.tp,
+    entry: base.entry,
+    sl: base.sl,
+    tp: base.tp,
   };
 }
 
 // 5. Volatility Compression → Expansion
-function sigVolExpansion(candles: Candle[], base: LiveAnalysis, price: number, regime: MarketRegime): StratSignal {
+function sigVolExpansion(
+  candles: Candle[],
+  base: LiveAnalysis,
+  price: number,
+  regime: MarketRegime,
+): StratSignal {
   if (regime !== "compression") {
     // detect expansion right after prior compression using BB width
-    const closes = candles.map(c => c.close);
+    const closes = candles.map((c) => c.close);
     const w1 = stddev(closes.slice(-30, -10));
     const w2 = stddev(closes.slice(-10));
     if (w2 > w1 * 1.7 && base.atr14 > 0) {
       const dir: "BUY" | "SELL" = base.trend === "up" ? "BUY" : "SELL";
       return {
-        strategy: "vol-expansion", dir, base: 40,
+        strategy: "vol-expansion",
+        dir,
+        base: 40,
         reason: "Expansion after compression",
         entry: price,
         sl: dir === "BUY" ? price - 1.5 * base.atr14 : price + 1.5 * base.atr14,
@@ -206,24 +310,46 @@ function sigVolExpansion(candles: Candle[], base: LiveAnalysis, price: number, r
       };
     }
   }
-  return { strategy: "vol-expansion", dir: "WAIT", base: 0, reason: "No expansion after compression" };
+  return {
+    strategy: "vol-expansion",
+    dir: "WAIT",
+    base: 0,
+    reason: "No expansion after compression",
+  };
 }
 
 // 6. Wyckoff phase tag (simplified accum/dist detection)
 function sigWyckoff(candles: Candle[], base: LiveAnalysis, price: number): StratSignal {
   // Accumulation proxy: long range with spring (deep wick below range low then close inside)
   const tail = candles.slice(-30);
-  if (tail.length < 30) return { strategy: "wyckoff", dir: "WAIT", base: 0, reason: "Insufficient candles" };
-  const rangeHi = Math.max(...tail.slice(0, -3).map(c => c.high));
-  const rangeLo = Math.min(...tail.slice(0, -3).map(c => c.low));
+  if (tail.length < 30)
+    return { strategy: "wyckoff", dir: "WAIT", base: 0, reason: "Insufficient candles" };
+  const rangeHi = Math.max(...tail.slice(0, -3).map((c) => c.high));
+  const rangeLo = Math.min(...tail.slice(0, -3).map((c) => c.low));
   const last3 = tail.slice(-3);
-  const spring = last3.some(c => c.low < rangeLo && c.close > rangeLo);
-  const utad = last3.some(c => c.high > rangeHi && c.close < rangeHi);
+  const spring = last3.some((c) => c.low < rangeLo && c.close > rangeLo);
+  const utad = last3.some((c) => c.high > rangeHi && c.close < rangeHi);
   if (spring && base.htfTrend15m === "up") {
-    return { strategy: "wyckoff", dir: "BUY", base: 40, reason: "Wyckoff spring (accum)", entry: price, sl: rangeLo - 0.5 * base.atr14, tp: rangeHi };
+    return {
+      strategy: "wyckoff",
+      dir: "BUY",
+      base: 40,
+      reason: "Wyckoff spring (accum)",
+      entry: price,
+      sl: rangeLo - 0.5 * base.atr14,
+      tp: rangeHi,
+    };
   }
   if (utad && base.htfTrend15m === "down") {
-    return { strategy: "wyckoff", dir: "SELL", base: 40, reason: "Wyckoff UTAD (dist)", entry: price, sl: rangeHi + 0.5 * base.atr14, tp: rangeLo };
+    return {
+      strategy: "wyckoff",
+      dir: "SELL",
+      base: 40,
+      reason: "Wyckoff UTAD (dist)",
+      entry: price,
+      sl: rangeHi + 0.5 * base.atr14,
+      tp: rangeLo,
+    };
   }
   return { strategy: "wyckoff", dir: "WAIT", base: 0, reason: "No Wyckoff spring/UTAD" };
 }
@@ -232,13 +358,17 @@ function sigWyckoff(candles: Candle[], base: LiveAnalysis, price: number): Strat
 function sigEmaPullback(base: LiveAnalysis, price: number): StratSignal {
   const stackedUp = base.ema20 > base.ema50 && base.ema50 > base.ema200;
   const stackedDn = base.ema20 < base.ema50 && base.ema50 < base.ema200;
-  if (!stackedUp && !stackedDn) return { strategy: "momentum", dir: "WAIT", base: 0, reason: "EMA not stacked" };
+  if (!stackedUp && !stackedDn)
+    return { strategy: "momentum", dir: "WAIT", base: 0, reason: "EMA not stacked" };
   const nearEma20 = Math.abs(price - base.ema20) <= 0.6 * base.atr14;
-  if (!nearEma20) return { strategy: "momentum", dir: "WAIT", base: 0, reason: "No pullback to EMA20" };
+  if (!nearEma20)
+    return { strategy: "momentum", dir: "WAIT", base: 0, reason: "No pullback to EMA20" };
   if (base.adx14 < 22) return { strategy: "momentum", dir: "WAIT", base: 0, reason: "ADX too low" };
   const dir = stackedUp ? "BUY" : "SELL";
   return {
-    strategy: "momentum", dir, base: 40,
+    strategy: "momentum",
+    dir,
+    base: 40,
     reason: "EMA pullback + stack + ADX",
     entry: price,
     sl: dir === "BUY" ? price - 1.5 * base.atr14 : price + 1.5 * base.atr14,
@@ -249,8 +379,8 @@ function sigEmaPullback(base: LiveAnalysis, price: number): StratSignal {
 // 8. ICT OTE — Fib 0.62–0.79 inside POI
 function sigOte(candles: Candle[], base: LiveAnalysis, price: number): StratSignal {
   const tail = candles.slice(-30);
-  const hi = Math.max(...tail.map(c => c.high));
-  const lo = Math.min(...tail.map(c => c.low));
+  const hi = Math.max(...tail.map((c) => c.high));
+  const lo = Math.min(...tail.map((c) => c.low));
   const range = hi - lo;
   if (range <= 0) return { strategy: "ote", dir: "WAIT", base: 0, reason: "Flat range" };
   const bull = base.htfTrend15m === "up";
@@ -260,7 +390,9 @@ function sigOte(candles: Candle[], base: LiveAnalysis, price: number): StratSign
   if (!inOte) return { strategy: "ote", dir: "WAIT", base: 0, reason: "Price outside OTE zone" };
   const dir = bull ? "BUY" : "SELL";
   return {
-    strategy: "ote", dir, base: 38,
+    strategy: "ote",
+    dir,
+    base: 38,
     reason: `Price in OTE 0.62–0.79 (${bull ? "long" : "short"})`,
     entry: price,
     sl: bull ? lo - 0.3 * base.atr14 : hi + 0.3 * base.atr14,
@@ -270,10 +402,20 @@ function sigOte(candles: Candle[], base: LiveAnalysis, price: number): StratSign
 
 // 9. Fractal BOS/CHOCH — leverage base
 function sigFractal(base: LiveAnalysis, price: number): StratSignal {
-  if (!base.bos && !base.choch) return { strategy: "fractal", dir: "WAIT", base: 0, reason: "No fractal break" };
-  const dir = base.bos && base.trend === "up" ? "BUY" : base.bos && base.trend === "down" ? "SELL" : base.choch && base.htfTrend15m === "up" ? "BUY" : "SELL";
+  if (!base.bos && !base.choch)
+    return { strategy: "fractal", dir: "WAIT", base: 0, reason: "No fractal break" };
+  const dir =
+    base.bos && base.trend === "up"
+      ? "BUY"
+      : base.bos && base.trend === "down"
+        ? "SELL"
+        : base.choch && base.htfTrend15m === "up"
+          ? "BUY"
+          : "SELL";
   return {
-    strategy: "fractal", dir, base: 35,
+    strategy: "fractal",
+    dir,
+    base: 35,
     reason: base.bos ? "BOS in trend direction" : "CHOCH reversal",
     entry: price,
     sl: dir === "BUY" ? price - 1.5 * base.atr14 : price + 1.5 * base.atr14,
@@ -284,24 +426,51 @@ function sigFractal(base: LiveAnalysis, price: number): StratSignal {
 // 10. Dynamic S/R (nearest untested swing → target only, no standalone entry)
 function sigDynamicSr(candles: Candle[], base: LiveAnalysis, price: number): StratSignal {
   const { highs, lows } = findSwings(candles, 4, 4);
-  const above = highs.map(h => h.val).filter(v => v > price).sort((a, b) => a - b)[0];
-  const below = lows.map(l => l.val).filter(v => v < price).sort((a, b) => b - a)[0];
+  const above = highs
+    .map((h) => h.val)
+    .filter((v) => v > price)
+    .sort((a, b) => a - b)[0];
+  const below = lows
+    .map((l) => l.val)
+    .filter((v) => v < price)
+    .sort((a, b) => b - a)[0];
   if (base.htfTrend15m === "up" && above) {
-    return { strategy: "dynamic-sr", dir: "BUY", base: 25, reason: "Nearest resistance target", entry: price, sl: price - 1.5 * base.atr14, tp: above };
+    return {
+      strategy: "dynamic-sr",
+      dir: "BUY",
+      base: 25,
+      reason: "Nearest resistance target",
+      entry: price,
+      sl: price - 1.5 * base.atr14,
+      tp: above,
+    };
   }
   if (base.htfTrend15m === "down" && below) {
-    return { strategy: "dynamic-sr", dir: "SELL", base: 25, reason: "Nearest support target", entry: price, sl: price + 1.5 * base.atr14, tp: below };
+    return {
+      strategy: "dynamic-sr",
+      dir: "SELL",
+      base: 25,
+      reason: "Nearest support target",
+      entry: price,
+      sl: price + 1.5 * base.atr14,
+      tp: below,
+    };
   }
   return { strategy: "dynamic-sr", dir: "WAIT", base: 0, reason: "No S/R target" };
 }
 
 // 11. BB + RSI mean reversion (delegate to existing analyzeMeanReversion)
 function sigBbRsi(mr: LiveAnalysis): StratSignal {
-  if (mr.decision === "WAIT") return { strategy: "bb-rsi", dir: "WAIT", base: 0, reason: "BB+RSI: " + (mr.rationale || "") };
+  if (mr.decision === "WAIT")
+    return { strategy: "bb-rsi", dir: "WAIT", base: 0, reason: "BB+RSI: " + (mr.rationale || "") };
   return {
-    strategy: "bb-rsi", dir: mr.decision as "BUY" | "SELL", base: 40,
+    strategy: "bb-rsi",
+    dir: mr.decision as "BUY" | "SELL",
+    base: 40,
     reason: "BB band touch + RSI extreme",
-    entry: mr.entry, sl: mr.sl, tp: mr.tp,
+    entry: mr.entry,
+    sl: mr.sl,
+    tp: mr.tp,
   };
 }
 
@@ -324,13 +493,19 @@ export interface CheckmateAnalysis {
  */
 export function checkStrategyAlignment(
   signals: StratSignal[],
-  strategies: StrategyKind[]
+  strategies: StrategyKind[],
 ): CheckmateAnalysis {
   const relevant = signals.filter((s) => strategies.includes(s.strategy));
   const reasons: string[] = [];
 
   if (relevant.length === 0) {
-    return { aligned: false, consensusDirection: "WAIT", zoneOverlap: 0, combinedStrength: 0, reasons: ["No relevant signals found"] };
+    return {
+      aligned: false,
+      consensusDirection: "WAIT",
+      zoneOverlap: 0,
+      combinedStrength: 0,
+      reasons: ["No relevant signals found"],
+    };
   }
 
   // Single strategy case - check if it has a valid signal
@@ -346,22 +521,24 @@ export function checkStrategyAlignment(
   }
 
   // Multiple strategy checkmate - all must agree on direction
-  const directions = relevant.map(s => s.dir).filter(d => d !== "WAIT");
+  const directions = relevant.map((s) => s.dir).filter((d) => d !== "WAIT");
   if (directions.length !== relevant.length) {
     return {
       aligned: false,
       consensusDirection: "WAIT",
       zoneOverlap: 0,
-      combinedStrength: Math.max(...relevant.map(s => s.base)) / 60,
-      reasons: relevant.filter(s => s.dir === "WAIT").map((s) => s.reason),
+      combinedStrength: Math.max(...relevant.map((s) => s.base)) / 60,
+      reasons: relevant.filter((s) => s.dir === "WAIT").map((s) => s.reason),
     };
   }
 
   // Check all signals have same direction
   const firstDir = directions[0];
-  const allMatch = directions.every(d => d === firstDir);
+  const allMatch = directions.every((d) => d === firstDir);
   if (!allMatch) {
-    const conflicts = relevant.filter(s => s.dir !== firstDir).map(s => `${s.strategy}=${s.dir}`);
+    const conflicts = relevant
+      .filter((s) => s.dir !== firstDir)
+      .map((s) => `${s.strategy}=${s.dir}`);
     reasons.push(`Direction conflicts: ${conflicts.join(", ")}`);
     return {
       aligned: false,
@@ -389,12 +566,13 @@ export function checkStrategyAlignment(
       }
     }
   }
-  const avgZoneOverlap = zoneOverlapRatios.length > 0 
-    ? zoneOverlapRatios.reduce((a, b) => a + b, 0) / zoneOverlapRatios.length 
-    : 1;
+  const avgZoneOverlap =
+    zoneOverlapRatios.length > 0
+      ? zoneOverlapRatios.reduce((a, b) => a + b, 0) / zoneOverlapRatios.length
+      : 1;
 
   // Combined strength - average of all signals plus alignment bonus
-  const strengths = relevant.map(s => s.base / 60);
+  const strengths = relevant.map((s) => s.base / 60);
   const avgStrength = strengths.reduce((a, b) => a + b, 0) / strengths.length;
   const alignmentBonus = avgZoneOverlap * 0.5;
   const combinedStrength = Math.min(1, avgStrength + alignmentBonus);
@@ -414,11 +592,29 @@ export function checkStrategyAlignment(
 
 // ── Regime → allowed strategies ───────────────────────────────────────
 const REGIME_ALLOW: Record<MarketRegime, StrategyKind[]> = {
-  trend_up:    ["msnr-crt", "apa", "momentum", "ob-fvg", "ote", "fractal", "dynamic-sr", "vol-expansion"] as StrategyKind[],
-  trend_down:  ["msnr-crt", "apa", "momentum", "ob-fvg", "ote", "fractal", "dynamic-sr", "vol-expansion"] as StrategyKind[],
-  range:       ["apa", "liquidity-sweep", "bb-rsi", "ob-fvg", "wyckoff", "dynamic-sr"] as StrategyKind[],
+  trend_up: [
+    "msnr-crt",
+    "apa",
+    "momentum",
+    "ob-fvg",
+    "ote",
+    "fractal",
+    "dynamic-sr",
+    "vol-expansion",
+  ] as StrategyKind[],
+  trend_down: [
+    "msnr-crt",
+    "apa",
+    "momentum",
+    "ob-fvg",
+    "ote",
+    "fractal",
+    "dynamic-sr",
+    "vol-expansion",
+  ] as StrategyKind[],
+  range: ["apa", "liquidity-sweep", "bb-rsi", "ob-fvg", "wyckoff", "dynamic-sr"] as StrategyKind[],
   compression: ["vol-expansion", "fractal"] as StrategyKind[],
-  reversal:    ["liquidity-sweep", "wyckoff", "ob-fvg", "apa"] as StrategyKind[],
+  reversal: ["liquidity-sweep", "wyckoff", "ob-fvg", "apa"] as StrategyKind[],
 };
 
 // ── Confluence scorer ─────────────────────────────────────────────────
@@ -468,7 +664,9 @@ export function analyzeEnsemble(
       dir: mom.decision as "BUY" | "SELL",
       base: 45,
       reason: "Momentum continuation (EMA stacked)",
-      entry: mom.entry, sl: mom.sl, tp: mom.tp,
+      entry: mom.entry,
+      sl: mom.sl,
+      tp: mom.tp,
     });
   }
 
@@ -492,7 +690,9 @@ export function analyzeEnsemble(
     }
 
     // Find the best signal among the selected strategies for entry/SL/TP
-    const primarySig = signals.find((s) => s.strategy === selected[0] && s.dir === aligned.consensusDirection);
+    const primarySig = signals.find(
+      (s) => s.strategy === selected[0] && s.dir === aligned.consensusDirection,
+    );
     if (primarySig) {
       const isBuy = aligned.consensusDirection === "BUY";
       const entry = primarySig.entry ?? price;
@@ -506,10 +706,16 @@ export function analyzeEnsemble(
         { label: `${selected[0]} primary`, points: Math.round(aligned.combinedStrength * 60) },
       ];
       if (selected.length > 1) {
-        breakdown.push({ label: `${selected[1]} aligned`, points: Math.round(aligned.zoneOverlap * 40) });
+        breakdown.push({
+          label: `${selected[1]} aligned`,
+          points: Math.round(aligned.zoneOverlap * 40),
+        });
       }
       if (selected.length > 2) {
-        breakdown.push({ label: `${selected[2]} triple confirmation`, points: Math.round(aligned.zoneOverlap * 30) });
+        breakdown.push({
+          label: `${selected[2]} triple confirmation`,
+          points: Math.round(aligned.zoneOverlap * 30),
+        });
       }
 
       return {
@@ -520,8 +726,11 @@ export function analyzeEnsemble(
         strategy: selected[0],
         decision: aligned.consensusDirection,
         confidence: Math.min(0.98, aligned.combinedStrength + 0.1),
-        entry, sl, tp,
-        tp1, tp2: tp,
+        entry,
+        sl,
+        tp,
+        tp1,
+        tp2: tp,
         rationale: `[${regime.regime} · ${selected.join(" + ")}] Checkmate: ${aligned.reasons.join(". ")}. RR ${(Math.abs(tp - entry) / risk).toFixed(2)}`,
       };
     }
@@ -533,39 +742,69 @@ export function analyzeEnsemble(
     if (s.dir === "WAIT") continue;
     if (!selected.includes(s.strategy) || !allowed.includes(s.strategy)) continue;
 
-    const breakdown: ConfluenceContribution[] = [
-      { label: `${s.strategy} base`, points: s.base },
-    ];
+    const breakdown: ConfluenceContribution[] = [{ label: `${s.strategy} base`, points: s.base }];
     let score = s.base;
 
     // +30 liquidity sweep aligned
-    const sweep = signals.find(x => x.strategy === "liquidity-sweep" && x.dir === s.dir);
-    if (sweep && sweep !== s) { score += 30; breakdown.push({ label: "Liquidity sweep aligned", points: 30 }); }
+    const sweep = signals.find((x) => x.strategy === "liquidity-sweep" && x.dir === s.dir);
+    if (sweep && sweep !== s) {
+      score += 30;
+      breakdown.push({ label: "Liquidity sweep aligned", points: 30 });
+    }
     // +25 OB/FVG overlap
-    const ob = signals.find(x => x.strategy === "ob-fvg" && x.dir === s.dir);
-    if (ob && ob !== s) { score += 25; breakdown.push({ label: "OB/FVG overlap", points: 25 }); }
+    const ob = signals.find((x) => x.strategy === "ob-fvg" && x.dir === s.dir);
+    if (ob && ob !== s) {
+      score += 25;
+      breakdown.push({ label: "OB/FVG overlap", points: 25 });
+    }
     // +20 vol expansion
-    const ve = signals.find(x => x.strategy === "vol-expansion" && x.dir === s.dir);
-    if (ve && ve !== s) { score += 20; breakdown.push({ label: "Vol expansion", points: 20 }); }
+    const ve = signals.find((x) => x.strategy === "vol-expansion" && x.dir === s.dir);
+    if (ve && ve !== s) {
+      score += 20;
+      breakdown.push({ label: "Vol expansion", points: 20 });
+    }
     // +15 OTE or fractal
-    const ote = signals.find(x => (x.strategy === "ote" || x.strategy === "fractal") && x.dir === s.dir);
-    if (ote && ote !== s) { score += 15; breakdown.push({ label: "OTE/Fractal", points: 15 }); }
+    const ote = signals.find(
+      (x) => (x.strategy === "ote" || x.strategy === "fractal") && x.dir === s.dir,
+    );
+    if (ote && ote !== s) {
+      score += 15;
+      breakdown.push({ label: "OTE/Fractal", points: 15 });
+    }
     // +10 EMA pullback or Dynamic S/R
-    const emaOrSr = signals.find(x => (x.strategy === "momentum" || x.strategy === "dynamic-sr") && x.dir === s.dir);
-    if (emaOrSr && emaOrSr !== s) { score += 10; breakdown.push({ label: "EMA pullback / S-R", points: 10 }); }
+    const emaOrSr = signals.find(
+      (x) => (x.strategy === "momentum" || x.strategy === "dynamic-sr") && x.dir === s.dir,
+    );
+    if (emaOrSr && emaOrSr !== s) {
+      score += 10;
+      breakdown.push({ label: "EMA pullback / S-R", points: 10 });
+    }
     // +10 Wyckoff phase
-    const wy = signals.find(x => x.strategy === "wyckoff" && x.dir === s.dir);
-    if (wy && wy !== s) { score += 10; breakdown.push({ label: "Wyckoff phase", points: 10 }); }
+    const wy = signals.find((x) => x.strategy === "wyckoff" && x.dir === s.dir);
+    if (wy && wy !== s) {
+      score += 10;
+      breakdown.push({ label: "Wyckoff phase", points: 10 });
+    }
     // +8 MSNR/APA agreement
-    const msnrApa = signals.find(x => (x.strategy === "msnr-crt" || x.strategy === "apa") && x.dir === s.dir && x !== s);
-    if (msnrApa) { score += 8; breakdown.push({ label: "MSNR/APA agree", points: 8 }); }
+    const msnrApa = signals.find(
+      (x) => (x.strategy === "msnr-crt" || x.strategy === "apa") && x.dir === s.dir && x !== s,
+    );
+    if (msnrApa) {
+      score += 8;
+      breakdown.push({ label: "MSNR/APA agree", points: 8 });
+    }
 
     // Penalties
     if ((s.dir === "BUY" && obFvg.rsi14 >= 72) || (s.dir === "SELL" && obFvg.rsi14 <= 28)) {
-      score -= 10; breakdown.push({ label: "RSI extreme against trade", points: -10 });
+      score -= 10;
+      breakdown.push({ label: "RSI extreme against trade", points: -10 });
     }
-    if ((s.dir === "BUY" && regime.regime === "trend_down") || (s.dir === "SELL" && regime.regime === "trend_up")) {
-      score -= 20; breakdown.push({ label: "Counter-regime", points: -20 });
+    if (
+      (s.dir === "BUY" && regime.regime === "trend_down") ||
+      (s.dir === "SELL" && regime.regime === "trend_up")
+    ) {
+      score -= 20;
+      breakdown.push({ label: "Counter-regime", points: -20 });
     }
 
     score = Math.max(0, Math.min(100, score));
@@ -601,8 +840,11 @@ export function analyzeEnsemble(
     ...base,
     decision: sig.dir as "BUY" | "SELL",
     confidence: Math.min(0.98, 0.4 + (best.score / 100) * 0.55),
-    entry, sl, tp,
-    tp1, tp2: tp,
+    entry,
+    sl,
+    tp,
+    tp1,
+    tp2: tp,
     rationale: `[${regime.regime} · ${sig.strategy}] ${sig.reason}. Score ${best.score.toFixed(0)}/100. RR ${(Math.abs(tp - entry) / risk).toFixed(2)}.`,
   };
 }

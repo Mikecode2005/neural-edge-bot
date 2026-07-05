@@ -99,24 +99,23 @@ export interface SignalResult {
 /**
  * Analyze candles using OB+FVG strategy (wraps src/lib/ob-fvg analyze()).
  */
-export function analyzeCandles(candles: {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  time: number;
-  epoch?: number;
-}[]): SignalResult {
+export function analyzeCandles(
+  candles: {
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    time: number;
+    epoch?: number;
+  }[],
+): SignalResult {
   // Cast to Candle[] for ob-fvg compatibility
   return analyze(candles as any) as unknown as SignalResult;
 }
 
 // ── Metrics computation (extracted from backtest.tsx) ──
 
-export function computeMetrics(
-  trades: TradeEntry[],
-  startingBalance: number,
-): BacktestMetrics {
+export function computeMetrics(trades: TradeEntry[], startingBalance: number): BacktestMetrics {
   const wins = trades.filter((t) => t.pnl > 0);
   const losses = trades.filter((t) => t.pnl < 0);
   const grossProfit = wins.reduce((a, t) => a + t.pnl, 0);
@@ -164,18 +163,13 @@ export function computeMetrics(
   const expectancy = winRate * avgWin - lossRate * avgLoss;
 
   const returns = trades.map((t) => t.pnl);
-  const meanReturn =
-    returns.reduce((a, b) => a + b, 0) / (returns.length || 1);
-  const variance =
-    returns.reduce((a, r) => a + (r - meanReturn) ** 2, 0) /
-    (returns.length || 1);
+  const meanReturn = returns.reduce((a, b) => a + b, 0) / (returns.length || 1);
+  const variance = returns.reduce((a, r) => a + (r - meanReturn) ** 2, 0) / (returns.length || 1);
   const stdDev = Math.sqrt(variance);
   const sharpe = stdDev > 0 ? (meanReturn / stdDev) * Math.sqrt(252) : 0;
 
   const avgBarsHeld =
-    trades.length > 0
-      ? trades.reduce((a, t) => a + t.barsHeld, 0) / trades.length
-      : 0;
+    trades.length > 0 ? trades.reduce((a, t) => a + t.barsHeld, 0) / trades.length : 0;
 
   return {
     totalTrades: trades.length,
@@ -185,12 +179,7 @@ export function computeMetrics(
     lossRate: lossRate * 100,
     totalPnl,
     finalEquity,
-    profitFactor:
-      grossLoss > 0
-        ? grossProfit / grossLoss
-        : grossProfit > 0
-          ? Infinity
-          : 0,
+    profitFactor: grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0,
     maxDrawdown: maxDD,
     maxDrawdownPct: maxDDPct,
     maxConsecutiveWins: maxConsWins,
@@ -230,19 +219,14 @@ export function computePnlBins(
   const pnls = trades.map((t) => t.pnl);
   const min = Math.min(...pnls);
   const max = Math.max(...pnls);
-  if (min === max)
-    return [
-      { range: min.toFixed(2), count: trades.length, isProfit: min >= 0 },
-    ];
+  if (min === max) return [{ range: min.toFixed(2), count: trades.length, isProfit: min >= 0 }];
   const binCount = Math.min(maxBins, Math.max(4, Math.ceil(trades.length / 3)));
   const binWidth = (max - min) / binCount;
   const bins: { range: string; count: number; isProfit: boolean }[] = [];
   for (let i = 0; i < binCount; i++) {
     const lo = min + i * binWidth;
     const hi = lo + binWidth;
-    const cnt = pnls.filter(
-      (p) => p >= lo && (i === binCount - 1 ? p <= hi : p < hi),
-    ).length;
+    const cnt = pnls.filter((p) => p >= lo && (i === binCount - 1 ? p <= hi : p < hi)).length;
     bins.push({
       range: `${lo.toFixed(2)}`,
       count: cnt,

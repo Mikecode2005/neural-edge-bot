@@ -30,7 +30,7 @@ export const logTradeOpen = createServerFn({ method: "POST" })
       .insert({
         user_id: context.userId,
         symbol: data.symbol,
-        side: data.side === 'CALL' ? 'BUY' : data.side === 'PUT' ? 'SELL' : data.side,
+        side: data.side === "CALL" ? "BUY" : data.side === "PUT" ? "SELL" : data.side,
         entry_price: data.buy_price,
         size: data.stake,
         status: "open",

@@ -27,14 +27,13 @@ export function AIPanel({ analysis, symbol, onPaperTrade, pending }: Props) {
   const isBuy = analysis.decision === "BUY";
   const isSell = analysis.decision === "SELL";
   const tone = isBuy ? "bull" : isSell ? "bear" : "warn";
-  const toneText =
-    tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : "text-warn";
+  const toneText = tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : "text-warn";
   const toneBg =
     tone === "bull"
       ? "bg-bull-soft border-bull/30"
       : tone === "bear"
-      ? "bg-bear-soft border-bear/30"
-      : "bg-surface-2 border-border";
+        ? "bg-bear-soft border-bear/30"
+        : "bg-surface-2 border-border";
 
   return (
     <div className="glass rounded-xl p-5 h-full flex flex-col gap-4">
@@ -52,21 +51,15 @@ export function AIPanel({ analysis, symbol, onPaperTrade, pending }: Props) {
         <div className="flex items-center gap-3">
           <div className={toneText}>{decisionIcon[analysis.decision]}</div>
           <div>
-            <div className={`text-2xl font-semibold ${toneText}`}>
-              {analysis.decision}
-            </div>
+            <div className={`text-2xl font-semibold ${toneText}`}>{analysis.decision}</div>
             <div className="text-xs text-muted-foreground">
               Trend {analysis.trend.toUpperCase()} · RSI {analysis.rsi14.toFixed(1)}
             </div>
           </div>
         </div>
         <div className="text-right">
-          <div className="text-xs uppercase tracking-wider text-muted-foreground">
-            Confidence
-          </div>
-          <div className="numeric text-xl font-semibold">
-            {fmtPct(analysis.confidence)}
-          </div>
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Confidence</div>
+          <div className="numeric text-xl font-semibold">{fmtPct(analysis.confidence)}</div>
         </div>
       </div>
 
@@ -95,33 +88,18 @@ export function AIPanel({ analysis, symbol, onPaperTrade, pending }: Props) {
         {pending
           ? "Opening…"
           : analysis.decision === "WAIT"
-          ? "No actionable setup"
-          : `Open ${analysis.decision} · Paper Trade`}
+            ? "No actionable setup"
+            : `Open ${analysis.decision} · Paper Trade`}
       </button>
     </div>
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: "bull" | "bear";
-}) {
-  const t =
-    tone === "bull"
-      ? "text-bull"
-      : tone === "bear"
-      ? "text-bear"
-      : "text-foreground";
+function Stat({ label, value, tone }: { label: string; value: string; tone?: "bull" | "bear" }) {
+  const t = tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : "text-foreground";
   return (
     <div className="rounded-md bg-surface-2/60 px-3 py-2 border border-border/60">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-        {label}
-      </div>
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
       <div className={`numeric font-semibold ${t}`}>{value}</div>
     </div>
   );

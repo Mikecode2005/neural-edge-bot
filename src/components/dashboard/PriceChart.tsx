@@ -34,14 +34,8 @@ export function PriceChart({ candles, analysis, livePrice }: Props) {
     [candles],
   );
 
-  const minY = useMemo(
-    () => (data.length ? Math.min(...data.map((d) => d.close)) : 0),
-    [data],
-  );
-  const maxY = useMemo(
-    () => (data.length ? Math.max(...data.map((d) => d.close)) : 1),
-    [data],
-  );
+  const minY = useMemo(() => (data.length ? Math.min(...data.map((d) => d.close)) : 0), [data]);
+  const maxY = useMemo(() => (data.length ? Math.max(...data.map((d) => d.close)) : 1), [data]);
   const pad = (maxY - minY) * 0.1 || 0.001;
 
   const obZone = analysis?.activeOB;
@@ -50,12 +44,8 @@ export function PriceChart({ candles, analysis, livePrice }: Props) {
   return (
     <div className="glass rounded-xl p-4 h-[420px]">
       <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-sm uppercase tracking-wider text-muted-foreground">
-          Live Price
-        </h3>
-        <div className="numeric text-xl font-semibold">
-          {fmtPrice(livePrice)}
-        </div>
+        <h3 className="text-sm uppercase tracking-wider text-muted-foreground">Live Price</h3>
+        <div className="numeric text-xl font-semibold">{fmtPrice(livePrice)}</div>
       </div>
       <ResponsiveContainer width="100%" height="88%">
         <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
@@ -130,7 +120,12 @@ export function PriceChart({ candles, analysis, livePrice }: Props) {
               y={analysis.entry}
               stroke="var(--color-primary)"
               strokeDasharray="2 4"
-              label={{ value: "Entry", fill: "var(--color-primary)", fontSize: 10, position: "right" }}
+              label={{
+                value: "Entry",
+                fill: "var(--color-primary)",
+                fontSize: 10,
+                position: "right",
+              }}
             />
           )}
           {analysis?.sl && (

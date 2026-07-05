@@ -14,5 +14,4 @@ export const fmtMoney = (n: number | null | undefined, digits = 2) =>
         maximumFractionDigits: digits,
       }).format(n);
 
-export const fmtTime = (epoch: number) =>
-  new Date(epoch * 1000).toLocaleTimeString();
+export const fmtTime = (epoch: number) => new Date(epoch * 1000).toLocaleTimeString();

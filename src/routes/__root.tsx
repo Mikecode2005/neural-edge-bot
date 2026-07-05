@@ -78,17 +78,37 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "devtybot" },
-      { name: "description", content: "An AI-powered platform for autonomous cryptocurrency trading and market analysis." },
+      {
+        name: "description",
+        content:
+          "An AI-powered platform for autonomous cryptocurrency trading and market analysis.",
+      },
       { name: "author", content: "Lovable" },
       { property: "og:title", content: "devtybot" },
-      { property: "og:description", content: "An AI-powered platform for autonomous cryptocurrency trading and market analysis." },
+      {
+        property: "og:description",
+        content:
+          "An AI-powered platform for autonomous cryptocurrency trading and market analysis.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
       { name: "twitter:title", content: "devtybot" },
-      { name: "twitter:description", content: "An AI-powered platform for autonomous cryptocurrency trading and market analysis." },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/2c0e340a-6a27-4083-9bad-2f643669e0a5/id-preview-20775550--79a3623d-5b7c-4a95-bd3f-9f4cbc98adec.lovable.app-1782751036333.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/2c0e340a-6a27-4083-9bad-2f643669e0a5/id-preview-20775550--79a3623d-5b7c-4a95-bd3f-9f4cbc98adec.lovable.app-1782751036333.png" },
+      {
+        name: "twitter:description",
+        content:
+          "An AI-powered platform for autonomous cryptocurrency trading and market analysis.",
+      },
+      {
+        property: "og:image",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/2c0e340a-6a27-4083-9bad-2f643669e0a5/id-preview-20775550--79a3623d-5b7c-4a95-bd3f-9f4cbc98adec.lovable.app-1782751036333.png",
+      },
+      {
+        name: "twitter:image",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/2c0e340a-6a27-4083-9bad-2f643669e0a5/id-preview-20775550--79a3623d-5b7c-4a95-bd3f-9f4cbc98adec.lovable.app-1782751036333.png",
+      },
     ],
     links: [
       {

@@ -50,7 +50,8 @@ async function buildSystemPrompt(userId: string): Promise<string> {
   const s = settingsRes.data;
   const bal = balRes.data;
   const pnlToday = (tradesRes.data ?? []).reduce((a, r) => a + Number(r.pnl ?? 0), 0);
-  const lessons = (memRes.data ?? []).map((m, i) => `${i + 1}. ${m.lesson}`).join("\n") || "(none yet)";
+  const lessons =
+    (memRes.data ?? []).map((m, i) => `${i + 1}. ${m.lesson}`).join("\n") || "(none yet)";
 
   return `You are the user's AI trading coach for the Order Block + Fair Value Gap strategy on Deriv synthetic indices.
 You can answer plain questions, plan their bankroll, set risk rules, and explain trades. Be concise, warm, and concrete. Use short bullet lists. Skip disclaimer boilerplate.

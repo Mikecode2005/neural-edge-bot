@@ -153,7 +153,9 @@ function MemoryPage() {
             onChange={(e) => setFilter(e.target.value)}
             className="max-w-xs"
           />
-          <p className="text-xs text-muted-foreground">{filtered.length} of {rows.length}</p>
+          <p className="text-xs text-muted-foreground">
+            {filtered.length} of {rows.length}
+          </p>
         </div>
 
         <div className="space-y-3">
@@ -196,7 +198,15 @@ function MemoryCard({
         <div className="flex items-center gap-2 text-xs">
           {row.pinned && <Badge variant="default">Pinned</Badge>}
           {row.outcome && (
-            <Badge variant={row.outcome === "win" ? "default" : row.outcome === "loss" ? "destructive" : "secondary"}>
+            <Badge
+              variant={
+                row.outcome === "win"
+                  ? "default"
+                  : row.outcome === "loss"
+                    ? "destructive"
+                    : "secondary"
+              }
+            >
               {row.outcome}
             </Badge>
           )}
@@ -233,7 +243,9 @@ function MemoryCard({
           onChange={(e) => onChange({ usefulness_score: Number(e.target.value) })}
           className="w-24"
         />
-        <Label className="text-[10px] text-muted-foreground uppercase tracking-wider ml-3">Tags</Label>
+        <Label className="text-[10px] text-muted-foreground uppercase tracking-wider ml-3">
+          Tags
+        </Label>
         <Input
           value={(row.tags ?? []).join(", ")}
           onChange={(e) =>

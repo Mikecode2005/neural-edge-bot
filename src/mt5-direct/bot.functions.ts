@@ -455,10 +455,22 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
             timeframe: bot.timeframe ?? "1m",
             candles: candles.slice(-60),
             ob_zones: obFvgAnalysis.activeOB
-              ? [{ type: obFvgAnalysis.activeOB.kind, top: obFvgAnalysis.activeOB.top, bottom: obFvgAnalysis.activeOB.bottom }]
+              ? [
+                  {
+                    type: obFvgAnalysis.activeOB.kind,
+                    top: obFvgAnalysis.activeOB.top,
+                    bottom: obFvgAnalysis.activeOB.bottom,
+                  },
+                ]
               : [],
             fvg_zones: obFvgAnalysis.activeFVG
-              ? [{ type: obFvgAnalysis.activeFVG.kind, top: obFvgAnalysis.activeFVG.top, bottom: obFvgAnalysis.activeFVG.bottom }]
+              ? [
+                  {
+                    type: obFvgAnalysis.activeFVG.kind,
+                    top: obFvgAnalysis.activeFVG.top,
+                    bottom: obFvgAnalysis.activeFVG.bottom,
+                  },
+                ]
               : [],
             current_price: last.close,
             balance: available,
@@ -467,9 +479,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         const qwen = qwenResult as any;
         const direction =
           qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
-        const streakThreshold = consecutiveLosses >= 3
-          ? Math.min(0.98, Number((bot as any).min_confidence ?? 0.65) + 0.10)
-          : Number((bot as any).min_confidence ?? 0.65);
+        const streakThreshold =
+          consecutiveLosses >= 3
+            ? Math.min(0.98, Number((bot as any).min_confidence ?? 0.65) + 0.1)
+            : Number((bot as any).min_confidence ?? 0.65);
         decision = {
           shouldTrade: direction !== "NONE" && Number(qwen.confidence ?? 0) >= streakThreshold,
           direction: direction as "CALL" | "PUT" | "NONE",

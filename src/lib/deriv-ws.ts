@@ -91,18 +91,12 @@ export class DerivWS {
         this.handlers.delete(symbol);
         this.subscriptions.delete(symbol);
         this.send({ forget_all: "ticks" });
-        this.subscriptions.forEach((s) =>
-          this.send({ ticks: s, subscribe: 1 }),
-        );
+        this.subscriptions.forEach((s) => this.send({ ticks: s, subscribe: 1 }));
       }
     };
   }
 
-  async fetchCandles(
-    symbol: string,
-    granularity = 60,
-    count = 200,
-  ): Promise<Candle[]> {
+  async fetchCandles(symbol: string, granularity = 60, count = 200): Promise<Candle[]> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(DERIV_WS);
       const timer = setTimeout(() => {

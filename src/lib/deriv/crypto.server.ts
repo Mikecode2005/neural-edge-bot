@@ -23,9 +23,6 @@ export function decryptToken(payload: string): string {
   if (!ivB64 || !tagB64 || !dataB64) throw new Error("bad ciphertext");
   const decipher = createDecipheriv("aes-256-gcm", getKey(), Buffer.from(ivB64, "base64"));
   decipher.setAuthTag(Buffer.from(tagB64, "base64"));
-  const dec = Buffer.concat([
-    decipher.update(Buffer.from(dataB64, "base64")),
-    decipher.final(),
-  ]);
+  const dec = Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]);
   return dec.toString("utf8");
 }

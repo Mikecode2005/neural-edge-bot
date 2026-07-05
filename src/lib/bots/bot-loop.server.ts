@@ -87,8 +87,14 @@ async function closePosition(args: {
     .select("stake, floating_pnl")
     .eq("bot_run_id", bot.id)
     .eq("status", "open");
-  const locked = (openPositions ?? []).reduce((sum: number, p: any) => sum + Number(p.stake ?? 0), 0);
-  const floating = (openPositions ?? []).reduce((sum: number, p: any) => sum + Number(p.floating_pnl ?? 0), 0);
+  const locked = (openPositions ?? []).reduce(
+    (sum: number, p: any) => sum + Number(p.stake ?? 0),
+    0,
+  );
+  const floating = (openPositions ?? []).reduce(
+    (sum: number, p: any) => sum + Number(p.floating_pnl ?? 0),
+    0,
+  );
 
   await supabase
     .from("bot_runs")
@@ -203,18 +209,27 @@ async function openSimulatedPosition(args: {
 
 export async function analyzeBotDecision(botId: string, candles: Candle[]) {
   const supabase = supabaseAdmin;
-  const { data: bot, error } = await supabase.from("bot_runs").select("*").eq("id", botId).maybeSingle();
+  const { data: bot, error } = await supabase
+    .from("bot_runs")
+    .select("*")
+    .eq("id", botId)
+    .maybeSingle();
   if (error) throw new Error(error.message);
   if (!bot || bot.status !== "running") return { ok: false, reason: "bot_not_running" };
 
   if (!candles || candles.length < 61) {
-    throw new Error("No real candle data available. Open the dashboard first to stream market data.");
+    throw new Error(
+      "No real candle data available. Open the dashboard first to stream market data.",
+    );
   }
 
   const latest = candles.at(-1);
   if (!latest) throw new Error("No candle data available");
 
-  const availableBalance = Number(bot.account_balance ?? 1000) + Number(bot.total_pnl ?? 0) - Number(bot.locked_stake ?? 0);
+  const availableBalance =
+    Number(bot.account_balance ?? 1000) +
+    Number(bot.total_pnl ?? 0) -
+    Number(bot.locked_stake ?? 0);
 
   // If strategy_mode is "qwen", call Qwen AI for the decision
   if (bot.strategy_mode === "qwen") {
@@ -227,15 +242,32 @@ export async function analyzeBotDecision(botId: string, candles: Candle[]) {
           symbol: bot.symbol,
           timeframe: bot.timeframe ?? "1m",
           candles: candles.slice(-60),
-          ob_zones: analysis.activeOB ? [{ type: analysis.activeOB.kind, top: analysis.activeOB.top, bottom: analysis.activeOB.bottom }] : [],
-          fvg_zones: analysis.activeFVG ? [{ type: analysis.activeFVG.kind, top: analysis.activeFVG.top, bottom: analysis.activeFVG.bottom }] : [],
+          ob_zones: analysis.activeOB
+            ? [
+                {
+                  type: analysis.activeOB.kind,
+                  top: analysis.activeOB.top,
+                  bottom: analysis.activeOB.bottom,
+                },
+              ]
+            : [],
+          fvg_zones: analysis.activeFVG
+            ? [
+                {
+                  type: analysis.activeFVG.kind,
+                  top: analysis.activeFVG.top,
+                  bottom: analysis.activeFVG.bottom,
+                },
+              ]
+            : [],
           current_price: latest.close,
           balance: availableBalance,
         },
       });
 
       const qwen = qwenResult as any;
-      const direction = qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
+      const direction =
+        qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
       const confidence = Number(qwen.confidence ?? 0);
       const stake = calculateBotStake({
         availableBalance,
@@ -257,8 +289,12 @@ export async function analyzeBotDecision(botId: string, candles: Candle[]) {
         durationUnit: "m",
         analysis: analysis as any,
         reasoning: `Qwen AI: ${qwen.reasoning ?? "No reasoning provided"}`,
-        obZone: analysis.activeOB ? `${analysis.activeOB.kind} OB [${analysis.activeOB.bottom.toFixed(4)}, ${analysis.activeOB.top.toFixed(4)}]` : null,
-        fvgZone: analysis.activeFVG ? `${analysis.activeFVG.kind} FVG [${analysis.activeFVG.bottom.toFixed(4)}, ${analysis.activeFVG.top.toFixed(4)}]` : null,
+        obZone: analysis.activeOB
+          ? `${analysis.activeOB.kind} OB [${analysis.activeOB.bottom.toFixed(4)}, ${analysis.activeOB.top.toFixed(4)}]`
+          : null,
+        fvgZone: analysis.activeFVG
+          ? `${analysis.activeFVG.kind} FVG [${analysis.activeFVG.bottom.toFixed(4)}, ${analysis.activeFVG.top.toFixed(4)}]`
+          : null,
         strategy: "ob-fvg",
       };
 
@@ -300,7 +336,11 @@ export async function analyzeBotDecision(botId: string, candles: Candle[]) {
 
 export async function processBotTick(botId: string, candles?: Candle[]) {
   const supabase = supabaseAdmin;
-  const { data: bot, error } = await supabase.from("bot_runs").select("*").eq("id", botId).maybeSingle();
+  const { data: bot, error } = await supabase
+    .from("bot_runs")
+    .select("*")
+    .eq("id", botId)
+    .maybeSingle();
   if (error) throw new Error(error.message);
   if (!bot || bot.status !== "running") return { ok: false, reason: "bot_not_running" };
 
@@ -312,7 +352,9 @@ export async function processBotTick(botId: string, candles?: Candle[]) {
     }
 
     if (!candles || candles.length < 61) {
-      throw new Error("No real candle data available. Open the dashboard first to stream market data.");
+      throw new Error(
+        "No real candle data available. Open the dashboard first to stream market data.",
+      );
     }
 
     const latest = candles.at(-1);
@@ -346,8 +388,14 @@ export async function processBotTick(botId: string, candles?: Candle[]) {
         .from("bot_runs")
         .update({
           current_price: latest.close,
-          locked_stake: (remaining ?? []).reduce((s: number, p: any) => s + Number(p.stake ?? 0), 0),
-          floating_pnl: (remaining ?? []).reduce((s: number, p: any) => s + Number(p.floating_pnl ?? 0), 0),
+          locked_stake: (remaining ?? []).reduce(
+            (s: number, p: any) => s + Number(p.stake ?? 0),
+            0,
+          ),
+          floating_pnl: (remaining ?? []).reduce(
+            (s: number, p: any) => s + Number(p.floating_pnl ?? 0),
+            0,
+          ),
           last_tick_at: new Date().toISOString(),
           last_server_loop_at: new Date().toISOString(),
           last_error: null,
@@ -356,7 +404,10 @@ export async function processBotTick(botId: string, candles?: Candle[]) {
       return { ok: true, action: "marked_open_positions", open: remaining?.length ?? 0 };
     }
 
-    const availableBalance = Number(bot.account_balance ?? 1000) + Number(bot.total_pnl ?? 0) - Number(bot.locked_stake ?? 0);
+    const availableBalance =
+      Number(bot.account_balance ?? 1000) +
+      Number(bot.total_pnl ?? 0) -
+      Number(bot.locked_stake ?? 0);
     const decision = makeObFvgBotDecision(candles, {
       minConfidence: Number(bot.min_confidence ?? 0.65),
       availableBalance,

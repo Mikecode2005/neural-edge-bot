@@ -7,15 +7,14 @@
  */
 
 export interface DerivOAuthAccount {
-  loginid: string;       // e.g. VRTC1234567 (demo) / CR1234567 (real)
+  loginid: string; // e.g. VRTC1234567 (demo) / CR1234567 (real)
   token: string;
   currency: string;
   account_type: "demo" | "real";
 }
 
 const APP_ID =
-  (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_DERIV_APP_ID) ||
-  "1089";
+  (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_DERIV_APP_ID) || "1089";
 
 export function startDerivOAuth(redirectPath = "/auth/deriv-callback") {
   if (typeof window === "undefined") return;

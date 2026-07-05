@@ -87,7 +87,10 @@ export function makeObFvgBotDecision(
   },
 ): BotDecision {
   const window = candles.slice(-200);
-  const analysis = opts.useMultiStrategy === false ? analyze(window) : analyzeMulti(window, opts.selectedStrategies);
+  const analysis =
+    opts.useMultiStrategy === false
+      ? analyze(window)
+      : analyzeMulti(window, opts.selectedStrategies);
   const last = window.at(-1);
   const obZone = formatObZone(analysis);
   const fvgZone = formatFvgZone(analysis);
@@ -109,14 +112,16 @@ export function makeObFvgBotDecision(
 
   // Loss-streak brake: bump required confidence by +0.10 after 3+ consecutive losses.
   const streak = Math.max(0, opts.consecutiveLosses ?? 0);
-  const effectiveThreshold = streak >= 3 ? Math.min(0.98, opts.minConfidence + 0.10) : opts.minConfidence;
+  const effectiveThreshold =
+    streak >= 3 ? Math.min(0.98, opts.minConfidence + 0.1) : opts.minConfidence;
   const confidenceOk = analysis.confidence >= effectiveThreshold;
 
   const shouldTrade = direction !== "NONE" && confidenceOk && stake > 0;
 
-  const brake = streak >= 3
-    ? ` | Loss-streak brake active (${streak} losses) — threshold raised to ${(effectiveThreshold * 100).toFixed(0)}%`
-    : "";
+  const brake =
+    streak >= 3
+      ? ` | Loss-streak brake active (${streak} losses) — threshold raised to ${(effectiveThreshold * 100).toFixed(0)}%`
+      : "";
   const below = confidenceOk
     ? ""
     : ` | Confidence ${(analysis.confidence * 100).toFixed(0)}% below threshold ${(effectiveThreshold * 100).toFixed(0)}%`;
@@ -141,10 +146,7 @@ export function makeObFvgBotDecision(
   };
 }
 
-export function markOpenPosition(
-  position: OpenBotPositionLike,
-  candle: Candle,
-): PositionMark {
+export function markOpenPosition(position: OpenBotPositionLike, candle: Candle): PositionMark {
   const directionSign = position.direction === "CALL" ? 1 : -1;
   const entry = Number(position.entry_price);
   const stake = Number(position.stake);
@@ -180,9 +182,13 @@ export function markOpenPosition(
   const favorableDistance = target == null ? 0 : Math.abs(target - entry);
   const adverseDistance = risk == null ? 0 : Math.abs(entry - risk);
   const moved = (candle.close - entry) * directionSign;
-  const floatingPnl = moved >= 0
-    ? Math.min(stake * BOT_PAYOUT_RATE, favorableDistance > 0 ? (moved / favorableDistance) * stake * BOT_PAYOUT_RATE : 0)
-    : Math.max(-stake, adverseDistance > 0 ? (moved / adverseDistance) * stake : -stake);
+  const floatingPnl =
+    moved >= 0
+      ? Math.min(
+          stake * BOT_PAYOUT_RATE,
+          favorableDistance > 0 ? (moved / favorableDistance) * stake * BOT_PAYOUT_RATE : 0,
+        )
+      : Math.max(-stake, adverseDistance > 0 ? (moved / adverseDistance) * stake : -stake);
 
   return {
     closed: false,
