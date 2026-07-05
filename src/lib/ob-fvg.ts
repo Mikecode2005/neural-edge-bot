@@ -16,7 +16,26 @@
  */
 import type { Candle } from "./deriv-ws";
 
-export type StrategyKind = "ob-fvg" | "mean-reversion" | "momentum";
+export type StrategyKind =
+  | "ob-fvg"
+  | "mean-reversion"
+  | "momentum"
+  | "msnr-crt"
+  | "apa"
+  | "liquidity-sweep"
+  | "vol-expansion"
+  | "wyckoff"
+  | "ote"
+  | "fractal"
+  | "dynamic-sr"
+  | "bb-rsi";
+
+export type MarketRegime = "trend_up" | "trend_down" | "range" | "compression" | "reversal";
+
+export interface ConfluenceContribution {
+  label: string;
+  points: number;
+}
 
 export interface FVG {
   kind: "bullish" | "bearish";
