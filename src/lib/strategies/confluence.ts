@@ -904,7 +904,7 @@ export function analyzeStrictConsensus(
   const totalActive = buys.length + sells.length;
 
   const breakdown: ConfluenceContribution[] = [
-    { label: `Regime: ${regime.regime}`, points: Math.round(regime.regimeScore * 30) },
+    { label: `Regime: ${regime.regime}`, points: Math.round(Math.max(0.3, 1 - regime.atrPct / 3) * 30) },
     { label: `Agreeing strategies: ${agree}/${signals.length}`, points: agree * 8 },
     { label: `Opposing: ${totalActive - agree}`, points: -(totalActive - agree) * 6 },
   ];
