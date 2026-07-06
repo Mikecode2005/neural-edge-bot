@@ -206,7 +206,7 @@ function Mt5DirectPage() {
     account_balance: 1000,
     volume: 0.01,
     account_type: "demo" as "demo" | "real",
-    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg" | "ob-fvg-strict",
+    strategy_mode: "mars1" as string,
   });
 
   // ── Data loading ──
@@ -568,8 +568,9 @@ function Mt5DirectPage() {
                 value={form.strategy_mode}
                 onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as any })}
               >
-                <option value="all">All Strategies (Ensemble)</option>
-                <option value="multi">Multi-Strategy (Top 3)</option>
+                <option value="mars1">Mars1 (Classic 3-Detector Multi)</option>
+                <option value="mars2">Mars2 (V25(1s) / V15(1s) Tuned)</option>
+                <option value="multi">Multi-Strategy Consensus (≥5 agree)</option>
                 <option value="titan1">TITAN1 (Elite Confluence)</option>
                 <option value="titan2">TITAN2 (Adaptive Momentum)</option>
                 <option value="msnr-crt">MSNR + CRT</option>
@@ -652,11 +653,32 @@ function Mt5DirectPage() {
                       {bot.ai_config?.volume ?? 0.01} lots
                     </span>
                     <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                      {(bot as any).strategy_mode === "qwen"
-                        ? "Qwen AI"
-                        : (bot as any).strategy_mode === "ob-fvg-strict"
-                          ? "OB+FVG strict"
-                          : "Multi-Strategy"}
+                      {(() => {
+                        const m = String((bot as any).strategy_mode ?? "mars1");
+                        const labels: Record<string, string> = {
+                          qwen: "Qwen AI",
+                          "ob-fvg-strict": "OB+FVG strict",
+                          "ob-fvg": "OB+FVG",
+                          mars1: "Mars1",
+                          mars2: "Mars2",
+                          titan1: "TITAN1",
+                          titan2: "TITAN2",
+                          multi: "Consensus ≥5",
+                          all: "Consensus ≥5",
+                          "msnr-crt": "MSNR+CRT",
+                          apa: "APA",
+                          "liquidity-sweep": "Liq Sweep",
+                          "vol-expansion": "Vol Exp",
+                          wyckoff: "Wyckoff",
+                          momentum: "Momentum",
+                          "mean-reversion": "Mean Rev",
+                          ote: "OTE",
+                          fractal: "Fractal",
+                          "dynamic-sr": "Dyn S/R",
+                          "bb-rsi": "BB+RSI",
+                        };
+                        return labels[m] ?? m;
+                      })()}
                     </Badge>
                   </div>
                   <div className="flex items-center gap-2">

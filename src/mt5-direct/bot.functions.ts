@@ -440,38 +440,44 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       else break;
     }
 
-    // 2) Analyze new decision - choose strategy based on bot's strategy_mode
-    const strategyMode = (botFresh as any)?.strategy_mode ?? "ob-fvg";
-    const { analyzeMulti } = await import("@/lib/ob-fvg");
-    const multiAnalysis = analyzeMulti(candles);
-    const obFvgAnalysis = analyze(candles); // for OB/FVG zones in logs
+    // 2) Analyze new decision — route STRICTLY by the bot's strategy_mode.
+    //    - "qwen"          → Qwen AI decision (Mars1 features supplied for context)
+    //    - "ob-fvg-strict" → analyze() only (hard-gated OB+FVG)
+    //    - "mars1"         → analyzeMars1 (classic 3-detector best-of)
+    //    - "mars2"         → analyzeMars2 (tuned for V25(1s) / V15(1s))
+    //    - "titan1"        → analyzeTitan1
+    //    - "titan2"        → analyzeTitan2
+    //    - "multi" / "all" → analyzeStrictConsensus (≥5 strategies must agree)
+    //    - specific catalog id (msnr-crt, apa, …) → analyzeEnsemble locked to
+    //      just that strategy — no fall-through to multi.
+    const strategyMode = String((botFresh as any)?.strategy_mode ?? "mars1");
+    const minConfidence = Number((bot as any).min_confidence ?? 0.65);
+    const streakThreshold =
+      consecutiveLosses >= 3
+        ? Math.min(0.98, minConfidence + 0.1)
+        : minConfidence;
+    const symbol = (bot as any).symbol as string;
 
-    let decision;
-    if (strategyMode === "qwen") {
-      try {
-        const { analyzeMarket } = await import("@/lib/ai/qwen.functions");
+    // Always compute base OB/FVG so activity logs still get zone info
+    const obFvgAnalysis = analyze(candles);
+
+    const runStrategy = async () => {
+      if (strategyMode === "qwen") {
+        const [{ analyzeMarket }, { analyzeMars1 }] = await Promise.all([
+          import("@/lib/ai/qwen.functions"),
+          import("@/lib/strategies/mars"),
+        ]);
+        const marsCtx = analyzeMars1(candles);
         const qwenResult = await analyzeMarket({
           data: {
-            symbol: (bot as any).symbol,
+            symbol,
             timeframe: bot.timeframe ?? "1m",
             candles: candles.slice(-60),
             ob_zones: obFvgAnalysis.activeOB
-              ? [
-                  {
-                    type: obFvgAnalysis.activeOB.kind,
-                    top: obFvgAnalysis.activeOB.top,
-                    bottom: obFvgAnalysis.activeOB.bottom,
-                  },
-                ]
+              ? [{ type: obFvgAnalysis.activeOB.kind, top: obFvgAnalysis.activeOB.top, bottom: obFvgAnalysis.activeOB.bottom }]
               : [],
             fvg_zones: obFvgAnalysis.activeFVG
-              ? [
-                  {
-                    type: obFvgAnalysis.activeFVG.kind,
-                    top: obFvgAnalysis.activeFVG.top,
-                    bottom: obFvgAnalysis.activeFVG.bottom,
-                  },
-                ]
+              ? [{ type: obFvgAnalysis.activeFVG.kind, top: obFvgAnalysis.activeFVG.top, bottom: obFvgAnalysis.activeFVG.bottom }]
               : [],
             current_price: last.close,
             balance: available,
@@ -480,11 +486,7 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         const qwen = qwenResult as any;
         const direction =
           qwen.direction === "CALL" ? "CALL" : qwen.direction === "PUT" ? "PUT" : "NONE";
-        const streakThreshold =
-          consecutiveLosses >= 3
-            ? Math.min(0.98, Number((bot as any).min_confidence ?? 0.65) + 0.1)
-            : Number((bot as any).min_confidence ?? 0.65);
-        decision = {
+        return {
           shouldTrade: direction !== "NONE" && Number(qwen.confidence ?? 0) >= streakThreshold,
           direction: direction as "CALL" | "PUT" | "NONE",
           confidence: Number(qwen.confidence ?? 0),
@@ -494,33 +496,96 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
           takeProfit: qwen.take_profit ?? null,
           duration: BOT_MAX_HOLD_CANDLES,
           durationUnit: "m" as const,
-          analysis: multiAnalysis,
-          reasoning: `Qwen AI: ${qwen.reasoning ?? "No reasoning provided"}${consecutiveLosses >= 3 ? ` | Loss-streak brake +10% (${consecutiveLosses})` : ""}`,
+          analysis: marsCtx,
+          reasoning: `Qwen AI: ${qwen.reasoning ?? "n/a"}${consecutiveLosses >= 3 ? ` | Loss-streak brake +10% (${consecutiveLosses})` : ""}`,
           obZone: formatObZone(obFvgAnalysis),
           fvgZone: formatFvgZone(obFvgAnalysis),
-          strategy: "ob-fvg" as const,
+          strategy: "qwen" as any,
         };
-      } catch {
-        decision = makeObFvgBotDecision(candles, {
-          minConfidence: Number((bot as any).min_confidence ?? 0.65),
-          availableBalance: available,
-          minStake: Number((bot as any).min_stake_per_trade ?? 1),
-          maxStake: Number((bot as any).max_stake_per_trade ?? 50),
-          consecutiveLosses,
-          useMultiStrategy: true,
-        });
       }
-    } else {
-      // OB+FVG-only or multi-strategy (default: multi)
-      decision = makeObFvgBotDecision(candles, {
-        minConfidence: Number((bot as any).min_confidence ?? 0.65),
-        availableBalance: available,
-        minStake: Number((bot as any).min_stake_per_trade ?? 1),
-        maxStake: Number((bot as any).max_stake_per_trade ?? 50),
-        consecutiveLosses,
-        useMultiStrategy: strategyMode !== "ob-fvg-strict",
-      });
+
+      // Resolve a LiveAnalysis according to mode, then adapt to bot decision.
+      let livePromise;
+      if (strategyMode === "ob-fvg-strict") {
+        livePromise = Promise.resolve(obFvgAnalysis);
+      } else if (strategyMode === "mars1") {
+        livePromise = import("@/lib/strategies/mars").then((m) => m.analyzeMars1(candles));
+      } else if (strategyMode === "mars2") {
+        livePromise = import("@/lib/strategies/mars").then((m) => m.analyzeMars2(candles, symbol));
+      } else if (strategyMode === "titan1") {
+        livePromise = import("@/lib/strategies/titan1").then((m) => {
+          const t = m.analyzeTitan1(candles);
+          return { ...obFvgAnalysis, decision: t.decision, confidence: t.confidence, entry: t.entry, sl: t.sl, tp: t.tp, strategy: "titan1" as const, rationale: t.rationale };
+        });
+      } else if (strategyMode === "titan2") {
+        livePromise = import("@/lib/strategies/titan2").then((m) => {
+          const t = m.analyzeTitan2(candles);
+          return { ...obFvgAnalysis, decision: t.decision, confidence: t.confidence, entry: t.entry, sl: t.sl, tp: t.tp, strategy: "titan2" as const, rationale: t.rationale };
+        });
+      } else if (strategyMode === "multi" || strategyMode === "all") {
+        livePromise = import("@/lib/strategies/confluence").then((m) => m.analyzeStrictConsensus(candles, 5));
+      } else {
+        // Specific strategy id → lock ensemble to just that one
+        livePromise = import("@/lib/strategies/confluence").then((m) =>
+          m.analyzeEnsemble(candles, 70, [strategyMode as any])
+        );
+      }
+      const analysis = await livePromise;
+
+      const direction: "CALL" | "PUT" | "NONE" =
+        analysis.decision === "BUY" ? "CALL" : analysis.decision === "SELL" ? "PUT" : "NONE";
+      const stake = Math.min((botFresh as any)?.max_stake_per_trade ?? 50, available);
+      const shouldTrade =
+        direction !== "NONE" && analysis.confidence >= streakThreshold && stake > 0;
+      const brake =
+        consecutiveLosses >= 3
+          ? ` | Loss-streak brake +10% (streak ${consecutiveLosses})`
+          : "";
+      return {
+        shouldTrade,
+        direction,
+        confidence: analysis.confidence,
+        entryPrice: analysis.entry ?? last.close,
+        stake,
+        stopLoss: analysis.sl ?? null,
+        takeProfit: analysis.tp ?? null,
+        duration: BOT_MAX_HOLD_CANDLES,
+        durationUnit: "m" as const,
+        analysis,
+        reasoning: `[${strategyMode}] ${analysis.rationale}${!shouldTrade && direction !== "NONE" ? ` | Confidence ${(analysis.confidence * 100).toFixed(0)}% below ${(streakThreshold * 100).toFixed(0)}%` : ""}${brake}`,
+        obZone: formatObZone(obFvgAnalysis),
+        fvgZone: formatFvgZone(obFvgAnalysis),
+        strategy: (analysis.strategy ?? strategyMode) as any,
+      };
+    };
+
+    let decision: Awaited<ReturnType<typeof runStrategy>>;
+    try {
+      decision = await runStrategy();
+    } catch (err) {
+      // Fall back to Mars1 on any strategy error so the bot keeps ticking.
+      const { analyzeMars1 } = await import("@/lib/strategies/mars");
+      const a = analyzeMars1(candles);
+      const dir: "CALL" | "PUT" | "NONE" =
+        a.decision === "BUY" ? "CALL" : a.decision === "SELL" ? "PUT" : "NONE";
+      decision = {
+        shouldTrade: false,
+        direction: dir,
+        confidence: a.confidence,
+        entryPrice: a.entry ?? last.close,
+        stake: 0,
+        stopLoss: a.sl ?? null,
+        takeProfit: a.tp ?? null,
+        duration: BOT_MAX_HOLD_CANDLES,
+        durationUnit: "m" as const,
+        analysis: a,
+        reasoning: `[${strategyMode}] Error running strategy, fell back to Mars1 diagnostics: ${err instanceof Error ? err.message : String(err)}`,
+        obZone: formatObZone(obFvgAnalysis),
+        fvgZone: formatFvgZone(obFvgAnalysis),
+        strategy: strategyMode as any,
+      };
     }
+
 
     const commonLog = {
       user_id: context.userId,

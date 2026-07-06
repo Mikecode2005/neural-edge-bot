@@ -848,3 +848,114 @@ export function analyzeEnsemble(
     rationale: `[${regime.regime} · ${sig.strategy}] ${sig.reason}. Score ${best.score.toFixed(0)}/100. RR ${(Math.abs(tp - entry) / risk).toFixed(2)}.`,
   };
 }
+
+// ── Strict-consensus multi-strategy ────────────────────────────────────
+/**
+ * Trade ONLY when at least `minAgree` of the 11 strategies produce a
+ * non-WAIT signal in the same direction. Uses the strongest agreeing
+ * signal for entry/SL/TP. If fewer than `minAgree` strategies concur,
+ * returns WAIT regardless of individual scores.
+ *
+ * This is what most users mean by "multi-strategy": genuine consensus,
+ * not just the top-scoring single strategy.
+ */
+export function analyzeStrictConsensus(
+  candles: Candle[],
+  minAgree = 5,
+): EnsembleResult {
+  const window = candles.slice(-200);
+  const price = window.at(-1)?.close ?? 0;
+  const obFvg = analyze(window);
+  const mom = analyzeMomentum(window);
+  const mr = analyzeMeanReversion(window);
+  const regime = detectRegime(obFvg, price);
+
+  const signals: StratSignal[] = [
+    sigMsnrCrt(window, obFvg, price),
+    sigApa(window, obFvg, price),
+    sigLiquiditySweep(window, obFvg, price),
+    sigObFvg(obFvg),
+    sigVolExpansion(window, obFvg, price, regime.regime),
+    sigWyckoff(window, obFvg, price),
+    { ...sigEmaPullback(obFvg, price), strategy: "momentum" },
+    sigOte(window, obFvg, price),
+    sigFractal(obFvg, price),
+    sigDynamicSr(window, obFvg, price),
+    sigBbRsi(mr),
+  ];
+  if (mom.decision !== "WAIT") {
+    signals.push({
+      strategy: "momentum",
+      dir: mom.decision as "BUY" | "SELL",
+      base: 45,
+      reason: "Momentum continuation (EMA stacked)",
+      entry: mom.entry,
+      sl: mom.sl,
+      tp: mom.tp,
+    });
+  }
+
+  const buys = signals.filter((s) => s.dir === "BUY");
+  const sells = signals.filter((s) => s.dir === "SELL");
+  const winners = buys.length >= sells.length ? buys : sells;
+  const dir: "BUY" | "SELL" | "WAIT" =
+    winners.length === 0 ? "WAIT" : winners === buys ? "BUY" : "SELL";
+  const agree = winners.length;
+  const totalActive = buys.length + sells.length;
+
+  const breakdown: ConfluenceContribution[] = [
+    { label: `Regime: ${regime.regime}`, points: Math.round(Math.max(0.3, 1 - regime.atrPct / 3) * 30) },
+    { label: `Agreeing strategies: ${agree}/${signals.length}`, points: agree * 8 },
+    { label: `Opposing: ${totalActive - agree}`, points: -(totalActive - agree) * 6 },
+  ];
+
+  const base: EnsembleResult = {
+    ...obFvg,
+    regime: regime.regime,
+    confluenceScore: Math.round((agree / signals.length) * 100),
+    scoreBreakdown: breakdown,
+    strategy: "ob-fvg",
+  };
+
+  if (dir === "WAIT" || agree < minAgree) {
+    return {
+      ...base,
+      decision: "WAIT",
+      confidence: Math.max(0.1, agree / signals.length),
+      rationale: `[Consensus] Only ${agree}/${minAgree} strategies agree${dir !== "WAIT" ? ` on ${dir}` : ""}. Need ≥${minAgree} to trade.`,
+    };
+  }
+
+  // Use highest-base agreeing signal for entry / SL / TP
+  const best = [...winners].sort((a, b) => b.base - a.base)[0];
+  const isBuy = dir === "BUY";
+  const entry = best.entry ?? price;
+  const sl = best.sl ?? (isBuy ? entry - 1.5 * obFvg.atr14 : entry + 1.5 * obFvg.atr14);
+  const tp = best.tp ?? (isBuy ? entry + 2.5 * obFvg.atr14 : entry - 2.5 * obFvg.atr14);
+  const risk = Math.abs(entry - sl) || obFvg.atr14;
+  const tp1 = isBuy ? entry + risk : entry - risk;
+
+  // Confidence: ratio of agreement + regime alignment bonus
+  const agreementRatio = agree / signals.length;
+  let conf = 0.5 + agreementRatio * 0.4;
+  if (
+    (isBuy && regime.regime === "trend_up") ||
+    (!isBuy && regime.regime === "trend_down")
+  )
+    conf += 0.05;
+  conf = Math.min(0.97, conf);
+
+  const names = winners.map((w) => w.strategy).join(", ");
+  return {
+    ...base,
+    strategy: best.strategy,
+    decision: dir,
+    confidence: conf,
+    entry,
+    sl,
+    tp,
+    tp1,
+    tp2: tp,
+    rationale: `[Consensus · ${regime.regime}] ${agree}/${signals.length} strategies agree on ${dir}: ${names}. Best: ${best.strategy} — ${best.reason}. RR ${(Math.abs(tp - entry) / risk).toFixed(2)}.`,
+  };
+}

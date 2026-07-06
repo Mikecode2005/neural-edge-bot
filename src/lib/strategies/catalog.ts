@@ -35,6 +35,16 @@ export const STRATEGY_CATALOG: { id: StrategyKind; label: string; description: s
     label: "TITAN2",
     description: "Adaptive momentum: 3-TF alignment, volatility-adjusted sizing, dynamic entries",
   },
+  {
+    id: "mars1",
+    label: "Mars1",
+    description: "Classic 3-detector multi-strategy: OB+FVG, Momentum, Mean-Reversion (best signal)",
+  },
+  {
+    id: "mars2",
+    label: "Mars2",
+    description: "Mars1 refined for Volatility 25 (1s) & Volatility 15 (1s) — tighter SL/TP, momentum-weighted",
+  },
 ];
 
 /** Strategy combinations for multi-strategy setups */
