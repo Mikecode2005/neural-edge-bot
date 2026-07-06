@@ -171,7 +171,8 @@ const StartInput = z.object({
   account_balance: z.number().positive().default(1000),
   volume: z.number().positive().default(0.01),
   account_type: z.enum(["demo", "real"]).default("demo"),
-  strategy_mode: z.enum(["qwen", "ob-fvg", "ob-fvg-strict", "combo"]).default("ob-fvg"),
+  strategy_mode: z.string().default("ob-fvg"),
+
   selected_strategies: z.array(z.string()).optional().default([]),
 });
 
