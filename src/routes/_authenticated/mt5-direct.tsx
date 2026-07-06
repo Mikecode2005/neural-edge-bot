@@ -206,7 +206,7 @@ function Mt5DirectPage() {
     account_balance: 1000,
     volume: 0.01,
     account_type: "demo" as "demo" | "real",
-    strategy_mode: "ob-fvg" as "qwen" | "ob-fvg" | "ob-fvg-strict",
+    strategy_mode: "mars1" as string,
   });
 
   // ── Data loading ──
