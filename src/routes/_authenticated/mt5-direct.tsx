@@ -568,8 +568,9 @@ function Mt5DirectPage() {
                 value={form.strategy_mode}
                 onChange={(e) => setForm({ ...form, strategy_mode: e.target.value as any })}
               >
-                <option value="all">All Strategies (Ensemble)</option>
-                <option value="multi">Multi-Strategy (Top 3)</option>
+                <option value="mars1">Mars1 (Classic 3-Detector Multi)</option>
+                <option value="mars2">Mars2 (V25(1s) / V15(1s) Tuned)</option>
+                <option value="multi">Multi-Strategy Consensus (≥5 agree)</option>
                 <option value="titan1">TITAN1 (Elite Confluence)</option>
                 <option value="titan2">TITAN2 (Adaptive Momentum)</option>
                 <option value="msnr-crt">MSNR + CRT</option>
