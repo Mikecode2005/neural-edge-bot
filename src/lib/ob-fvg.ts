@@ -31,7 +31,11 @@ export type StrategyKind =
   | "dynamic-sr"
   | "bb-rsi"
   | "titan1"
-  | "titan2";
+  | "titan2"
+  | "mars1"
+  | "mars2";
+
+export type { Candle } from "./deriv-ws";
 
 export type MarketRegime = "trend_up" | "trend_down" | "range" | "compression" | "reversal";
 
