@@ -171,9 +171,15 @@ const StartInput = z.object({
   account_balance: z.number().positive().default(1000),
   volume: z.number().positive().default(0.01),
   account_type: z.enum(["demo", "real"]).default("demo"),
-  strategy_mode: z.string().default("ob-fvg"),
+  strategy_mode: z.string().default("mars1"),
 
   selected_strategies: z.array(z.string()).optional().default([]),
+
+  // Position-management overlays (Mars1/Mars3 aware)
+  profit_target_usd: z.number().min(0).default(0), // 0 = disabled; e.g. 2 → auto-close at +$2
+  early_exit_on_reversal: z.boolean().default(true), // in-profit + reversal signal → close now
+  extend_on_high_confidence: z.boolean().default(true), // in-profit + same-side high conf → extend expiry
+  balance_conscious_volume: z.boolean().default(true), // scale lots by available / balance
 });
 
 // ── Public server functions ──────────────────────────────────────────────
