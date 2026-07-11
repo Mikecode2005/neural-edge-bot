@@ -734,6 +734,7 @@ function Mt5DirectPage() {
                           "ob-fvg": "OB+FVG",
                           mars1: "Mars1",
                           mars2: "Mars2",
+                          mars3: "Mars3",
                           titan1: "TITAN1",
                           titan2: "TITAN2",
                           multi: "Consensus ≥5",
