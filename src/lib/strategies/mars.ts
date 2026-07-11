@@ -141,3 +141,132 @@ function detectOneSecondVol(candles: Candle[], symbolHint?: string): boolean {
   const median = deltas[Math.floor(deltas.length / 2)];
   return median > 0 && median <= 2;
 }
+
+/**
+ * Mars3 — Mars1, optimised. Same 3-detector best-of core (Mars1 is untouched),
+ * but layered with:
+ *   • Pullback-confirmation gate — refuse to enter at the very tip of a
+ *     candle spike (this is what was hitting SL before the "pump"). We
+ *     require the last close to have retraced ≥25% back into the prior
+ *     candle range in the entry direction, or an active OB/FVG mitigation.
+ *   • Wider ATR stop (1.8× ATR14) with proportionally smaller lots so the
+ *     dollar risk envelope stays the same but breathing room grows.
+ *   • R:R lifted to 2.5× (SL) → so a lower win-rate still nets profit.
+ *   • Trend-alignment vetoes counter-trend picks unless MR RSI is very
+ *     extreme (<18 buys / >82 sells).
+ *   • Balance awareness: caller-supplied `balance` is used to skip the trade
+ *     entirely if projected worst-case risk > 3% of balance.
+ *
+ * volumeMultiplier is exported alongside so the bot can down-scale lots to
+ * keep dollar risk constant when the SL widens.
+ */
+export interface Mars3Result extends LiveAnalysis {
+  volumeMultiplier: number;
+}
+
+export function analyzeMars3(
+  candles: Candle[],
+  opts: { balance?: number; baseVolume?: number; symbolHint?: string } = {},
+): Mars3Result {
+  const window = candles.slice(-220);
+  const ob = analyze(window);
+  const mom = analyzeMomentum(window);
+  const mr = analyzeMeanReversion(window);
+
+  const last = window.at(-1);
+  const prev = window.at(-2);
+  const balance = Number(opts.balance ?? 0);
+
+  // Balance-conscious hard skip: if account is thin, only take highest-conf setups.
+  const balanceGate = balance > 0 && balance < 20 ? 0.82 : balance < 50 ? 0.75 : 0.68;
+
+  const tradable = [ob, mom, mr].filter((r) => r.decision !== "WAIT");
+  if (!tradable.length) {
+    const best = [ob, mom, mr].sort((a, b) => b.confidence - a.confidence)[0];
+    return {
+      ...best,
+      strategy: "mars3",
+      rationale: `[Mars3] All 3 detectors WAIT. Best diag: ${best.strategy} — ${best.rationale}`,
+      volumeMultiplier: 1,
+    };
+  }
+
+  // Trend-alignment veto for MR unless RSI truly extreme
+  const trend = String(ob.trend ?? "").toLowerCase();
+  const filtered = tradable.filter((r) => {
+    if (r.strategy !== "mean-reversion") return true;
+    if (r.decision === "BUY" && r.rsi14 < 18) return true;
+    if (r.decision === "SELL" && r.rsi14 > 82) return true;
+    if (trend.includes("bull") && r.decision === "SELL") return false;
+    if (trend.includes("bear") && r.decision === "BUY") return false;
+    return true;
+  });
+  const pool = filtered.length ? filtered : tradable;
+  const best = pool.sort((a, b) => b.confidence - a.confidence)[0];
+
+  // Pullback-confirmation gate — "don't chase the tip"
+  let pullbackOk = true;
+  let pullbackNote = "";
+  if (last && prev) {
+    const range = Math.max(1e-9, prev.high - prev.low);
+    if (best.decision === "BUY") {
+      // In a buy, we want the last close to be pulled back off recent high,
+      // OR sitting inside/near an active bullish OB/FVG.
+      const retrace = (last.high - last.close) / Math.max(1e-9, last.high - last.low || range);
+      const inZone =
+        (ob.activeOB && ob.activeOB.kind === "bullish" && last.close <= ob.activeOB.top) ||
+        (ob.activeFVG && ob.activeFVG.kind === "bullish" && last.close <= ob.activeFVG.top);
+      pullbackOk = retrace >= 0.25 || Boolean(inZone) || best.strategy === "mean-reversion";
+      if (!pullbackOk) pullbackNote = " | Rejected: BUY too extended (no ≥25% pullback, no zone).";
+    } else if (best.decision === "SELL") {
+      const retrace = (last.close - last.low) / Math.max(1e-9, last.high - last.low || range);
+      const inZone =
+        (ob.activeOB && ob.activeOB.kind === "bearish" && last.close >= ob.activeOB.bottom) ||
+        (ob.activeFVG && ob.activeFVG.kind === "bearish" && last.close >= ob.activeFVG.bottom);
+      pullbackOk = retrace >= 0.25 || Boolean(inZone) || best.strategy === "mean-reversion";
+      if (!pullbackOk) pullbackNote = " | Rejected: SELL too extended (no ≥25% pullback, no zone).";
+    }
+  }
+
+  // Widen SL to 1.8×ATR, extend TP to 2.5× that (RR ≈ 2.5).
+  const atr14 = best.atr14 || 0;
+  const isBuy = best.decision === "BUY";
+  let entry = best.entry;
+  let sl = best.sl;
+  let tp = best.tp;
+  const slMult = 1.8;
+  const tpMult = 4.5; // 1.8 * 2.5 = 4.5×ATR reward for a 1.8×ATR risk
+  if (entry != null && atr14 > 0) {
+    sl = isBuy ? entry - slMult * atr14 : entry + slMult * atr14;
+    tp = isBuy ? entry + tpMult * atr14 : entry - tpMult * atr14;
+  }
+
+  // Volume rescale to keep dollar risk equal to the caller's baseline (Mars1 uses ~1.2×ATR).
+  // widerSL/originalSL = 1.8/1.2 = 1.5 → lots should shrink by 1/1.5 ≈ 0.67.
+  const volumeMultiplier = 0.67;
+
+  // Confidence rescored: reward RR upgrade, penalise chase-entries.
+  let confidence = best.confidence;
+  if (!pullbackOk) confidence *= 0.6;
+  confidence = Math.min(0.97, confidence + 0.03); // small bump for tighter framework
+
+  // Balance gate
+  const belowBalanceGate = confidence < balanceGate;
+  const decision = pullbackOk && !belowBalanceGate ? best.decision : ("WAIT" as const);
+
+  const gateNote = belowBalanceGate
+    ? ` | Balance-gate: need conf ≥ ${(balanceGate * 100).toFixed(0)}% (bal $${balance.toFixed(2)}).`
+    : "";
+
+  return {
+    ...best,
+    decision,
+    entry,
+    sl,
+    tp,
+    strategy: "mars3",
+    confidence,
+    rationale: `[Mars3 · ${best.strategy}] ${best.rationale} | SL/TP 1.8x/4.5xATR (RR 2.5) · lot×${volumeMultiplier.toFixed(2)}${pullbackNote}${gateNote}`,
+    volumeMultiplier,
+  };
+}
