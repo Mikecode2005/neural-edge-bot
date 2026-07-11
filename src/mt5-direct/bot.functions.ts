@@ -741,9 +741,15 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       adjustedIsSell = false;
     }
 
-    const volume = symInfo
-      ? normalizeVolume(Number((bot as any).ai_config?.volume ?? 0.01), symInfo)
-      : Number((bot as any).ai_config?.volume ?? 0.01);
+    // Base volume from ai_config, then apply Mars3 rescale (wider SL → smaller lots)
+    // and balance-conscious scaling (available/balance ratio, clamped 0.3..1.2).
+    const baseVol = Number((bot as any).ai_config?.volume ?? 0.01);
+    const mars3Mult = Number((decision as any)?.analysis?.volumeMultiplier ?? 1);
+    const balConscious = (bot as any).ai_config?.balance_conscious_volume !== false;
+    const balanceRatio = balance > 0 ? Math.max(0.3, Math.min(1.2, available / balance)) : 1;
+    const balMult = balConscious ? balanceRatio : 1;
+    const rawVol = baseVol * mars3Mult * balMult;
+    const volume = symInfo ? normalizeVolume(rawVol, symInfo) : Number(rawVol.toFixed(2));
     const digits = symInfo?.digits ?? 5;
     const sl = decision.stopLoss == null ? undefined : roundToDigits(decision.stopLoss, digits);
     const tp = decision.takeProfit == null ? undefined : roundToDigits(decision.takeProfit, digits);
