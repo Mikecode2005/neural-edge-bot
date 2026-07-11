@@ -604,6 +604,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         livePromise = import("@/lib/strategies/mars").then((m) => m.analyzeMars1(candles));
       } else if (strategyMode === "mars2") {
         livePromise = import("@/lib/strategies/mars").then((m) => m.analyzeMars2(candles, symbol));
+      } else if (strategyMode === "mars3") {
+        livePromise = import("@/lib/strategies/mars").then((m) =>
+          m.analyzeMars3(candles, { balance: available, symbolHint: symbol }),
+        );
       } else if (strategyMode === "titan1") {
         livePromise = import("@/lib/strategies/titan1").then((m) => {
           const t = m.analyzeTitan1(candles);
