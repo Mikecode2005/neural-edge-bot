@@ -318,6 +318,23 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     // IMPORTANT: MT5 is CFD-style, not binary options. Do not use the Deriv
     // simulator payout (+stake*0.85 / -stake) for MT5 results; use MT5's
     // position.profit / deal history so spread, bid/ask fill and slippage are reflected.
+
+    // Position-management overlay config (per-bot ai_config)
+    const aiCfg = (bot as any).ai_config ?? {};
+    const profitTargetUsd = Number(aiCfg.profit_target_usd ?? 0);
+    const earlyExitOnReversal = aiCfg.early_exit_on_reversal !== false;
+    const extendOnHighConf = aiCfg.extend_on_high_confidence !== false;
+
+    // Quick reversal read using Mars1 (cheap, deterministic) — used ONLY for
+    // in-profit position management, never to override the main strategy pick.
+    let quickAnalysis: Awaited<ReturnType<typeof import("@/lib/strategies/mars").analyzeMars1>> | null = null;
+    try {
+      const { analyzeMars1 } = await import("@/lib/strategies/mars");
+      quickAnalysis = analyzeMars1(candles);
+    } catch {
+      quickAnalysis = null;
+    }
+
     const { data: openRows } = await supabaseAdmin
       .from("bot_positions")
       .select("*")
