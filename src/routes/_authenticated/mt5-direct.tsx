@@ -207,6 +207,10 @@ function Mt5DirectPage() {
     volume: 0.01,
     account_type: "demo" as "demo" | "real",
     strategy_mode: "mars1" as string,
+    profit_target_usd: 2,
+    early_exit_on_reversal: true,
+    extend_on_high_confidence: true,
+    balance_conscious_volume: true,
   });
 
   // ── Data loading ──
@@ -570,6 +574,7 @@ function Mt5DirectPage() {
               >
                 <option value="mars1">Mars1 (Classic 3-Detector Multi)</option>
                 <option value="mars2">Mars2 (V25(1s) / V15(1s) Tuned)</option>
+                <option value="mars3">Mars3 (Mars1 + Pullback-Confirm · 2.5RR · Balance-Aware)</option>
                 <option value="multi">Multi-Strategy Consensus (≥5 agree)</option>
                 <option value="titan1">TITAN1 (Elite Confluence)</option>
                 <option value="titan2">TITAN2 (Adaptive Momentum)</option>
@@ -590,6 +595,74 @@ function Mt5DirectPage() {
               </select>
             </div>
           </div>
+
+          {/* Position-management overlays */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-border/40">
+            <div>
+              <Label className="text-xs">Profit Target ($)</Label>
+              <Input
+                type="number"
+                step={0.5}
+                min={0}
+                value={form.profit_target_usd}
+                onChange={(e) =>
+                  setForm({ ...form, profit_target_usd: Number(e.target.value) })
+                }
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Auto-close a trade the moment floating P&amp;L reaches this. 0 disables.
+              </p>
+            </div>
+            <label className="flex items-start gap-2 text-xs cursor-pointer pt-4">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.early_exit_on_reversal}
+                onChange={(e) =>
+                  setForm({ ...form, early_exit_on_reversal: e.target.checked })
+                }
+              />
+              <span>
+                Early-exit on reversal
+                <span className="block text-[10px] text-muted-foreground">
+                  In profit + Mars1 flips → close now (lock gains).
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-xs cursor-pointer pt-4">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.extend_on_high_confidence}
+                onChange={(e) =>
+                  setForm({ ...form, extend_on_high_confidence: e.target.checked })
+                }
+              />
+              <span>
+                Extend hold on high confidence
+                <span className="block text-[10px] text-muted-foreground">
+                  In profit + same-side conf ≥75% → push expiry past 10-min cap.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-xs cursor-pointer pt-4">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.balance_conscious_volume}
+                onChange={(e) =>
+                  setForm({ ...form, balance_conscious_volume: e.target.checked })
+                }
+              />
+              <span>
+                Balance-conscious lots
+                <span className="block text-[10px] text-muted-foreground">
+                  Scale volume by available/balance ratio (0.3× – 1.2×).
+                </span>
+              </span>
+            </label>
+          </div>
+
           <Button onClick={onCreate} className="gap-1.5">
             <Play className="size-3.5" /> Start MT5 Bot
           </Button>
@@ -661,6 +734,7 @@ function Mt5DirectPage() {
                           "ob-fvg": "OB+FVG",
                           mars1: "Mars1",
                           mars2: "Mars2",
+                          mars3: "Mars3",
                           titan1: "TITAN1",
                           titan2: "TITAN2",
                           multi: "Consensus ≥5",

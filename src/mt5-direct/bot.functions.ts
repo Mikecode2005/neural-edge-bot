@@ -171,9 +171,15 @@ const StartInput = z.object({
   account_balance: z.number().positive().default(1000),
   volume: z.number().positive().default(0.01),
   account_type: z.enum(["demo", "real"]).default("demo"),
-  strategy_mode: z.string().default("ob-fvg"),
+  strategy_mode: z.string().default("mars1"),
 
   selected_strategies: z.array(z.string()).optional().default([]),
+
+  // Position-management overlays (Mars1/Mars3 aware)
+  profit_target_usd: z.number().min(0).default(0), // 0 = disabled; e.g. 2 → auto-close at +$2
+  early_exit_on_reversal: z.boolean().default(true), // in-profit + reversal signal → close now
+  extend_on_high_confidence: z.boolean().default(true), // in-profit + same-side high conf → extend expiry
+  balance_conscious_volume: z.boolean().default(true), // scale lots by available / balance
 });
 
 // ── Public server functions ──────────────────────────────────────────────
@@ -198,8 +204,14 @@ export const mt5StartBot = createServerFn({ method: "POST" })
         min_stake_per_trade: data.min_stake_per_trade,
         strategy_mode: data.strategy_mode,
         account_balance: data.account_balance,
-        // stash MT5 volume in ai_config so we don't need a schema change
-        ai_config: { volume: data.volume },
+        // stash MT5 volume + overlays in ai_config so we don't need a schema change
+        ai_config: {
+          volume: data.volume,
+          profit_target_usd: data.profit_target_usd,
+          early_exit_on_reversal: data.early_exit_on_reversal,
+          extend_on_high_confidence: data.extend_on_high_confidence,
+          balance_conscious_volume: data.balance_conscious_volume,
+        },
         server_loop_enabled: false,
         status: "running",
       } as any)
@@ -306,6 +318,23 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     // IMPORTANT: MT5 is CFD-style, not binary options. Do not use the Deriv
     // simulator payout (+stake*0.85 / -stake) for MT5 results; use MT5's
     // position.profit / deal history so spread, bid/ask fill and slippage are reflected.
+
+    // Position-management overlay config (per-bot ai_config)
+    const aiCfg = (bot as any).ai_config ?? {};
+    const profitTargetUsd = Number(aiCfg.profit_target_usd ?? 0);
+    const earlyExitOnReversal = aiCfg.early_exit_on_reversal !== false;
+    const extendOnHighConf = aiCfg.extend_on_high_confidence !== false;
+
+    // Quick reversal read using Mars1 (cheap, deterministic) — used ONLY for
+    // in-profit position management, never to override the main strategy pick.
+    let quickAnalysis: Awaited<ReturnType<typeof import("@/lib/strategies/mars").analyzeMars1>> | null = null;
+    try {
+      const { analyzeMars1 } = await import("@/lib/strategies/mars");
+      quickAnalysis = analyzeMars1(candles);
+    } catch {
+      quickAnalysis = null;
+    }
+
     const { data: openRows } = await supabaseAdmin
       .from("bot_positions")
       .select("*")
@@ -337,6 +366,69 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         } catch {
           mt5Position = null;
         }
+      }
+
+      // ── Position-management overlays (only when broker hasn't closed & mark didn't fire) ──
+      const brokerFloatingPnl = mt5Position ? Number(mt5Position.profit ?? 0) : mark.floatingPnl;
+      const posDirIsBuy = like.direction === "CALL";
+      const q = quickAnalysis;
+      const reversalOpposes =
+        !!q &&
+        q.decision !== "WAIT" &&
+        ((posDirIsBuy && q.decision === "SELL") || (!posDirIsBuy && q.decision === "BUY"));
+      const sameSideHighConf =
+        !!q &&
+        q.decision !== "WAIT" &&
+        ((posDirIsBuy && q.decision === "BUY") || (!posDirIsBuy && q.decision === "SELL")) &&
+        q.confidence >= 0.75;
+
+      let forceCloseReason: string | null = null;
+      if (!mark.closed) {
+        // A) Profit-target lock-in ($ ceiling per trade)
+        if (profitTargetUsd > 0 && brokerFloatingPnl >= profitTargetUsd) {
+          forceCloseReason = `Profit target $${profitTargetUsd.toFixed(2)} reached (floating $${brokerFloatingPnl.toFixed(2)}) — locking gains`;
+        }
+        // B) In-profit reversal → don't give it back
+        else if (earlyExitOnReversal && brokerFloatingPnl > 0 && reversalOpposes) {
+          forceCloseReason = `Reversal signal (${q!.strategy} → ${q!.decision}) while +$${brokerFloatingPnl.toFixed(2)} — closing to lock profit`;
+        }
+
+        // C) Extend expiry when in profit and same-side high confidence
+        if (
+          !forceCloseReason &&
+          extendOnHighConf &&
+          brokerFloatingPnl > 0 &&
+          sameSideHighConf &&
+          like.expires_epoch
+        ) {
+          const remaining = Number(like.expires_epoch) - Number(last.epoch);
+          // Only extend if we're nearing expiry (< 3 candles left)
+          if (remaining < tfSec * 3) {
+            const newExpires = Number(last.epoch) + BOT_MAX_HOLD_CANDLES * tfSec;
+            await supabaseAdmin
+              .from("bot_positions")
+              .update({ expires_epoch: newExpires } as any)
+              .eq("id", (pos as any).id);
+            like.expires_epoch = newExpires;
+            await supabaseAdmin.from("bot_activity").insert({
+              user_id: context.userId,
+              bot_run_id: data.id,
+              action: "SCAN",
+              symbol: (bot as any).symbol,
+              direction: like.direction,
+              entry_price: like.entry_price,
+              reasoning: `Hold extended: in profit $${brokerFloatingPnl.toFixed(2)} + high-conf continuation (${(q!.confidence * 100).toFixed(0)}%)`,
+              risk_check: `Expiry pushed by ${BOT_MAX_HOLD_CANDLES}×${tfSec}s`,
+            } as any);
+          }
+        }
+      }
+
+      if (forceCloseReason && !mark.closed) {
+        (mark as any).closed = true;
+        (mark as any).exitPrice = last.close;
+        (mark as any).outcome = brokerFloatingPnl > 0 ? "win" : "loss";
+        (mark as any).reason = forceCloseReason;
       }
 
       if (mark.closed) {
@@ -512,6 +604,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         livePromise = import("@/lib/strategies/mars").then((m) => m.analyzeMars1(candles));
       } else if (strategyMode === "mars2") {
         livePromise = import("@/lib/strategies/mars").then((m) => m.analyzeMars2(candles, symbol));
+      } else if (strategyMode === "mars3") {
+        livePromise = import("@/lib/strategies/mars").then((m) =>
+          m.analyzeMars3(candles, { balance: available, symbolHint: symbol }),
+        );
       } else if (strategyMode === "titan1") {
         livePromise = import("@/lib/strategies/titan1").then((m) => {
           const t = m.analyzeTitan1(candles);
@@ -645,9 +741,15 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       adjustedIsSell = false;
     }
 
-    const volume = symInfo
-      ? normalizeVolume(Number((bot as any).ai_config?.volume ?? 0.01), symInfo)
-      : Number((bot as any).ai_config?.volume ?? 0.01);
+    // Base volume from ai_config, then apply Mars3 rescale (wider SL → smaller lots)
+    // and balance-conscious scaling (available/balance ratio, clamped 0.3..1.2).
+    const baseVol = Number((bot as any).ai_config?.volume ?? 0.01);
+    const mars3Mult = Number((decision as any)?.analysis?.volumeMultiplier ?? 1);
+    const balConscious = (bot as any).ai_config?.balance_conscious_volume !== false;
+    const balanceRatio = balance > 0 ? Math.max(0.3, Math.min(1.2, available / balance)) : 1;
+    const balMult = balConscious ? balanceRatio : 1;
+    const rawVol = baseVol * mars3Mult * balMult;
+    const volume = symInfo ? normalizeVolume(rawVol, symInfo) : Number(rawVol.toFixed(2));
     const digits = symInfo?.digits ?? 5;
     const sl = decision.stopLoss == null ? undefined : roundToDigits(decision.stopLoss, digits);
     const tp = decision.takeProfit == null ? undefined : roundToDigits(decision.takeProfit, digits);

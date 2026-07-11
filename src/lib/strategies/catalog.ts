@@ -45,6 +45,11 @@ export const STRATEGY_CATALOG: { id: StrategyKind; label: string; description: s
     label: "Mars2",
     description: "Mars1 refined for Volatility 25 (1s) & Volatility 15 (1s) — tighter SL/TP, momentum-weighted",
   },
+  {
+    id: "mars3",
+    label: "Mars3",
+    description: "Mars1 optimised: pullback-confirmed entries, 1.8×ATR SL / 2.5RR, balance-aware volume rescaling",
+  },
 ];
 
 /** Strategy combinations for multi-strategy setups */
