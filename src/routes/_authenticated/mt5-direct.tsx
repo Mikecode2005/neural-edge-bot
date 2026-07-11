@@ -574,6 +574,7 @@ function Mt5DirectPage() {
               >
                 <option value="mars1">Mars1 (Classic 3-Detector Multi)</option>
                 <option value="mars2">Mars2 (V25(1s) / V15(1s) Tuned)</option>
+                <option value="mars3">Mars3 (Mars1 + Pullback-Confirm · 2.5RR · Balance-Aware)</option>
                 <option value="multi">Multi-Strategy Consensus (≥5 agree)</option>
                 <option value="titan1">TITAN1 (Elite Confluence)</option>
                 <option value="titan2">TITAN2 (Adaptive Momentum)</option>
