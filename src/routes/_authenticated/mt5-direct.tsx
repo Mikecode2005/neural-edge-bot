@@ -207,6 +207,10 @@ function Mt5DirectPage() {
     volume: 0.01,
     account_type: "demo" as "demo" | "real",
     strategy_mode: "mars1" as string,
+    profit_target_usd: 2,
+    early_exit_on_reversal: true,
+    extend_on_high_confidence: true,
+    balance_conscious_volume: true,
   });
 
   // ── Data loading ──
