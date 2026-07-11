@@ -204,8 +204,14 @@ export const mt5StartBot = createServerFn({ method: "POST" })
         min_stake_per_trade: data.min_stake_per_trade,
         strategy_mode: data.strategy_mode,
         account_balance: data.account_balance,
-        // stash MT5 volume in ai_config so we don't need a schema change
-        ai_config: { volume: data.volume },
+        // stash MT5 volume + overlays in ai_config so we don't need a schema change
+        ai_config: {
+          volume: data.volume,
+          profit_target_usd: data.profit_target_usd,
+          early_exit_on_reversal: data.early_exit_on_reversal,
+          extend_on_high_confidence: data.extend_on_high_confidence,
+          balance_conscious_volume: data.balance_conscious_volume,
+        },
         server_loop_enabled: false,
         status: "running",
       } as any)
