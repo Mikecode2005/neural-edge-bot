@@ -595,6 +595,74 @@ function Mt5DirectPage() {
               </select>
             </div>
           </div>
+
+          {/* Position-management overlays */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-border/40">
+            <div>
+              <Label className="text-xs">Profit Target ($)</Label>
+              <Input
+                type="number"
+                step={0.5}
+                min={0}
+                value={form.profit_target_usd}
+                onChange={(e) =>
+                  setForm({ ...form, profit_target_usd: Number(e.target.value) })
+                }
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Auto-close a trade the moment floating P&amp;L reaches this. 0 disables.
+              </p>
+            </div>
+            <label className="flex items-start gap-2 text-xs cursor-pointer pt-4">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.early_exit_on_reversal}
+                onChange={(e) =>
+                  setForm({ ...form, early_exit_on_reversal: e.target.checked })
+                }
+              />
+              <span>
+                Early-exit on reversal
+                <span className="block text-[10px] text-muted-foreground">
+                  In profit + Mars1 flips → close now (lock gains).
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-xs cursor-pointer pt-4">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.extend_on_high_confidence}
+                onChange={(e) =>
+                  setForm({ ...form, extend_on_high_confidence: e.target.checked })
+                }
+              />
+              <span>
+                Extend hold on high confidence
+                <span className="block text-[10px] text-muted-foreground">
+                  In profit + same-side conf ≥75% → push expiry past 10-min cap.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-xs cursor-pointer pt-4">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.balance_conscious_volume}
+                onChange={(e) =>
+                  setForm({ ...form, balance_conscious_volume: e.target.checked })
+                }
+              />
+              <span>
+                Balance-conscious lots
+                <span className="block text-[10px] text-muted-foreground">
+                  Scale volume by available/balance ratio (0.3× – 1.2×).
+                </span>
+              </span>
+            </label>
+          </div>
+
           <Button onClick={onCreate} className="gap-1.5">
             <Play className="size-3.5" /> Start MT5 Bot
           </Button>
