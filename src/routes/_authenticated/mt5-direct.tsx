@@ -578,7 +578,9 @@ function Mt5DirectPage() {
               >
                 <option value="mars1">Mars1 (Classic 3-Detector Multi)</option>
                 <option value="mars2">Mars2 (V25(1s) / V15(1s) Tuned)</option>
-                <option value="mars3">Mars3 (Mars1 + Pullback-Confirm · 2.5RR · Balance-Aware)</option>
+                <option value="mars3">
+                  Mars3 (Mars1 + Pullback-Confirm · 2.5RR · Balance-Aware)
+                </option>
                 <option value="mars4">Mars4 (Microstructure Intelligence Engine)</option>
                 <option value="multi">Multi-Strategy Consensus (≥5 agree)</option>
                 <option value="titan1">TITAN1 (Elite Confluence)</option>
@@ -610,9 +612,7 @@ function Mt5DirectPage() {
                 step={0.5}
                 min={0}
                 value={form.profit_target_usd}
-                onChange={(e) =>
-                  setForm({ ...form, profit_target_usd: Number(e.target.value) })
-                }
+                onChange={(e) => setForm({ ...form, profit_target_usd: Number(e.target.value) })}
               />
               <p className="text-[10px] text-muted-foreground mt-1">
                 Auto-close a trade the moment floating P&amp;L reaches this. 0 disables.
@@ -623,9 +623,7 @@ function Mt5DirectPage() {
                 type="checkbox"
                 className="mt-0.5"
                 checked={form.early_exit_on_reversal}
-                onChange={(e) =>
-                  setForm({ ...form, early_exit_on_reversal: e.target.checked })
-                }
+                onChange={(e) => setForm({ ...form, early_exit_on_reversal: e.target.checked })}
               />
               <span>
                 Early-exit on reversal
@@ -639,9 +637,7 @@ function Mt5DirectPage() {
                 type="checkbox"
                 className="mt-0.5"
                 checked={form.extend_on_high_confidence}
-                onChange={(e) =>
-                  setForm({ ...form, extend_on_high_confidence: e.target.checked })
-                }
+                onChange={(e) => setForm({ ...form, extend_on_high_confidence: e.target.checked })}
               />
               <span>
                 Extend hold on high confidence
@@ -655,9 +651,7 @@ function Mt5DirectPage() {
                 type="checkbox"
                 className="mt-0.5"
                 checked={form.balance_conscious_volume}
-                onChange={(e) =>
-                  setForm({ ...form, balance_conscious_volume: e.target.checked })
-                }
+                onChange={(e) => setForm({ ...form, balance_conscious_volume: e.target.checked })}
               />
               <span>
                 Balance-conscious lots

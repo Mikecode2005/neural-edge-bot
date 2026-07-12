@@ -13,12 +13,7 @@
  *          - minimum confidence floor lifted so weak signals don't leak
  */
 import type { Candle } from "@/lib/deriv-ws";
-import {
-  analyze,
-  analyzeMeanReversion,
-  analyzeMomentum,
-  type LiveAnalysis,
-} from "@/lib/ob-fvg";
+import { analyze, analyzeMeanReversion, analyzeMomentum, type LiveAnalysis } from "@/lib/ob-fvg";
 
 /**
  * Mars1 — pick highest-confidence tradable signal from the three
@@ -79,9 +74,7 @@ export function analyzeMars2(candles: Candle[], symbolHint?: string): LiveAnalys
     return w;
   };
 
-  const scored = [ob, mom, mr]
-    .map((r) => ({ r, w: weight(r) }))
-    .sort((a, b) => b.w - a.w);
+  const scored = [ob, mom, mr].map((r) => ({ r, w: weight(r) })).sort((a, b) => b.w - a.w);
   const top = scored[0];
 
   if (!top || top.w === 0) {
@@ -212,7 +205,12 @@ function mtfAgreementFor(direction: "BUY" | "SELL", votes: MarsMtfVote[]) {
 
 export function analyzeMars3(
   candles: Candle[],
-  opts: { balance?: number; baseVolume?: number; symbolHint?: string; higherTimeframes?: MarsHigherTimeframes } = {},
+  opts: {
+    balance?: number;
+    baseVolume?: number;
+    symbolHint?: string;
+    higherTimeframes?: MarsHigherTimeframes;
+  } = {},
 ): Mars3Result {
   const window = candles.slice(-220);
   const ob = analyze(window);
@@ -250,7 +248,10 @@ export function analyzeMars3(
   const pool = filtered.length ? filtered : tradable;
   const best = pool.sort((a, b) => b.confidence - a.confidence)[0];
   const votes = summarizeHigherTimeframes(opts.higherTimeframes);
-  const mtf = best.decision === "BUY" || best.decision === "SELL" ? mtfAgreementFor(best.decision, votes) : { aligned: 0, total: votes.length, requiredOk: true, note: "" };
+  const mtf =
+    best.decision === "BUY" || best.decision === "SELL"
+      ? mtfAgreementFor(best.decision, votes)
+      : { aligned: 0, total: votes.length, requiredOk: true, note: "" };
 
   // Pullback-confirmation gate — "don't chase the tip"
   let pullbackOk = true;
@@ -302,7 +303,8 @@ export function analyzeMars3(
 
   // Balance gate
   const belowBalanceGate = confidence < balanceGate;
-  const decision = pullbackOk && mtf.requiredOk && !belowBalanceGate ? best.decision : ("WAIT" as const);
+  const decision =
+    pullbackOk && mtf.requiredOk && !belowBalanceGate ? best.decision : ("WAIT" as const);
 
   const gateNote = belowBalanceGate
     ? ` | Balance-gate: need conf ≥ ${(balanceGate * 100).toFixed(0)}% (bal $${balance.toFixed(2)}).`
@@ -359,9 +361,8 @@ export function analyzeMars4(
     const directionSign = base.decision === "BUY" ? 1 : -1;
     const impulse = (last.close - prev.close) * directionSign;
     const range = Math.max(1e-9, last.high - last.low);
-    const closeLocation = base.decision === "BUY"
-      ? (last.close - last.low) / range
-      : (last.high - last.close) / range;
+    const closeLocation =
+      base.decision === "BUY" ? (last.close - last.low) / range : (last.high - last.close) / range;
     const shortSlope = (closes.at(-1)! - closes.at(-4)!) * directionSign;
     const notOverextended = Math.abs(last.close - Number(base.entry ?? last.close)) <= atr * 1.6;
     microScore += impulse > 0 ? 0.25 : 0;
@@ -373,7 +374,10 @@ export function analyzeMars4(
   microScore = Math.max(0, Math.min(1, microScore));
 
   const mtfScore = Number(base.mtfAgreement ?? 0.6);
-  const weightedConfidence = Math.min(0.99, base.confidence * 0.72 + mtfScore * 0.18 + microScore * 0.1);
+  const weightedConfidence = Math.min(
+    0.99,
+    base.confidence * 0.72 + mtfScore * 0.18 + microScore * 0.1,
+  );
   const rr = weightedConfidence >= 0.8 && mtfScore >= 0.75 ? 2 : 1;
   const isBuy = base.decision === "BUY";
   const entry = base.entry ?? last?.close;
@@ -387,9 +391,13 @@ export function analyzeMars4(
 
   const balance = Math.max(0, Number(opts.balance ?? 0));
   const maxScalePositions = weightedConfidence >= 0.95 ? 10 : weightedConfidence >= 0.8 ? 6 : 3;
-  const basketProfitTargetUsd = Math.max(1, Number((balance * (weightedConfidence >= 0.8 ? 0.006 : 0.003)).toFixed(2)));
+  const basketProfitTargetUsd = Math.max(
+    1,
+    Number((balance * (weightedConfidence >= 0.8 ? 0.006 : 0.003)).toFixed(2)),
+  );
   const basketStopUsd = Math.max(2, Number((balance * 0.015).toFixed(2)));
-  const scaleAllowed = base.decision !== "WAIT" && weightedConfidence >= 0.65 && microScore >= 0.45 && spreadOk;
+  const scaleAllowed =
+    base.decision !== "WAIT" && weightedConfidence >= 0.65 && microScore >= 0.45 && spreadOk;
   const decision = scaleAllowed ? base.decision : ("WAIT" as const);
   const volumeMultiplier = weightedConfidence >= 0.95 ? 1 : weightedConfidence >= 0.8 ? 0.75 : 0.45;
 

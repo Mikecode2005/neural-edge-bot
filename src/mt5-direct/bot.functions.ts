@@ -354,7 +354,9 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
 
     // Quick reversal read using Mars1 (cheap, deterministic) — used ONLY for
     // in-profit position management, never to override the main strategy pick.
-    let quickAnalysis: Awaited<ReturnType<typeof import("@/lib/strategies/mars").analyzeMars1>> | null = null;
+    let quickAnalysis: Awaited<
+      ReturnType<typeof import("@/lib/strategies/mars").analyzeMars1>
+    > | null = null;
     try {
       const { analyzeMars1 } = await import("@/lib/strategies/mars");
       quickAnalysis = analyzeMars1(candles);
@@ -575,9 +577,7 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     const strategyMode = String((botFresh as any)?.strategy_mode ?? "mars1");
     const minConfidence = Number((bot as any).min_confidence ?? 0.65);
     const streakThreshold =
-      consecutiveLosses >= 3
-        ? Math.min(0.98, minConfidence + 0.1)
-        : minConfidence;
+      consecutiveLosses >= 3 ? Math.min(0.98, minConfidence + 0.1) : minConfidence;
     const symbol = (bot as any).symbol as string;
     const spreadPrice = symInfo ? Number(symInfo.spread ?? 0) * Number(symInfo.point ?? 0) : 0;
 
@@ -597,10 +597,22 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
             timeframe: bot.timeframe ?? "1m",
             candles: candles.slice(-60),
             ob_zones: obFvgAnalysis.activeOB
-              ? [{ type: obFvgAnalysis.activeOB.kind, top: obFvgAnalysis.activeOB.top, bottom: obFvgAnalysis.activeOB.bottom }]
+              ? [
+                  {
+                    type: obFvgAnalysis.activeOB.kind,
+                    top: obFvgAnalysis.activeOB.top,
+                    bottom: obFvgAnalysis.activeOB.bottom,
+                  },
+                ]
               : [],
             fvg_zones: obFvgAnalysis.activeFVG
-              ? [{ type: obFvgAnalysis.activeFVG.kind, top: obFvgAnalysis.activeFVG.top, bottom: obFvgAnalysis.activeFVG.bottom }]
+              ? [
+                  {
+                    type: obFvgAnalysis.activeFVG.kind,
+                    top: obFvgAnalysis.activeFVG.top,
+                    bottom: obFvgAnalysis.activeFVG.bottom,
+                  },
+                ]
               : [],
             current_price: last.close,
             balance: available,
@@ -655,19 +667,39 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       } else if (strategyMode === "titan1") {
         livePromise = import("@/lib/strategies/titan1").then((m) => {
           const t = m.analyzeTitan1(candles);
-          return { ...obFvgAnalysis, decision: t.decision, confidence: t.confidence, entry: t.entry, sl: t.sl, tp: t.tp, strategy: "titan1" as const, rationale: t.rationale };
+          return {
+            ...obFvgAnalysis,
+            decision: t.decision,
+            confidence: t.confidence,
+            entry: t.entry,
+            sl: t.sl,
+            tp: t.tp,
+            strategy: "titan1" as const,
+            rationale: t.rationale,
+          };
         });
       } else if (strategyMode === "titan2") {
         livePromise = import("@/lib/strategies/titan2").then((m) => {
           const t = m.analyzeTitan2(candles);
-          return { ...obFvgAnalysis, decision: t.decision, confidence: t.confidence, entry: t.entry, sl: t.sl, tp: t.tp, strategy: "titan2" as const, rationale: t.rationale };
+          return {
+            ...obFvgAnalysis,
+            decision: t.decision,
+            confidence: t.confidence,
+            entry: t.entry,
+            sl: t.sl,
+            tp: t.tp,
+            strategy: "titan2" as const,
+            rationale: t.rationale,
+          };
         });
       } else if (strategyMode === "multi" || strategyMode === "all") {
-        livePromise = import("@/lib/strategies/confluence").then((m) => m.analyzeStrictConsensus(candles, 5));
+        livePromise = import("@/lib/strategies/confluence").then((m) =>
+          m.analyzeStrictConsensus(candles, 5),
+        );
       } else {
         // Specific strategy id → lock ensemble to just that one
         livePromise = import("@/lib/strategies/confluence").then((m) =>
-          m.analyzeEnsemble(candles, 70, [strategyMode as any])
+          m.analyzeEnsemble(candles, 70, [strategyMode as any]),
         );
       }
       const analysis = await livePromise;
@@ -678,9 +710,7 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       const shouldTrade =
         direction !== "NONE" && analysis.confidence >= streakThreshold && stake > 0;
       const brake =
-        consecutiveLosses >= 3
-          ? ` | Loss-streak brake +10% (streak ${consecutiveLosses})`
-          : "";
+        consecutiveLosses >= 3 ? ` | Loss-streak brake +10% (streak ${consecutiveLosses})` : "";
       return {
         shouldTrade,
         direction,
@@ -726,7 +756,6 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
       };
     }
 
-
     const commonLog = {
       user_id: context.userId,
       bot_run_id: data.id,
@@ -764,8 +793,12 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     }
 
     if (strategyMode === "mars4") {
-      const currentOpen = (openRows ?? []).filter((p: any) => String(p.status ?? "open") === "open");
-      const maxFromAnalysis = Number((decision as any).analysis?.maxScalePositions ?? mars4ConfiguredMaxPositions);
+      const currentOpen = (openRows ?? []).filter(
+        (p: any) => String(p.status ?? "open") === "open",
+      );
+      const maxFromAnalysis = Number(
+        (decision as any).analysis?.maxScalePositions ?? mars4ConfiguredMaxPositions,
+      );
       const maxMars4Positions = Math.min(mars4ConfiguredMaxPositions, maxFromAnalysis);
       const sameSideOpen = currentOpen.filter((p: any) => p.direction === decision.direction);
       const oppositeOpen = currentOpen.filter((p: any) => p.direction !== decision.direction);
