@@ -104,7 +104,7 @@ function validateMt5TradeSetup(args: {
   if (!sl || !tp) errors.push("missing SL/TP");
   if (risk == null || reward == null || risk <= 0 || reward <= 0)
     errors.push("invalid risk/reward distance");
-  if (rr > 0 && rr < 1.2) errors.push(`RR ${rr.toFixed(2)} below minimum 1.20`);
+  if (rr > 0 && rr < 0.95) errors.push(`RR ${rr.toFixed(2)} below minimum 0.95`);
   if (isSell && sl != null && sl <= entryPrice) errors.push("SELL stop loss must be above entry");
   if (isSell && tp != null && tp >= entryPrice) errors.push("SELL take profit must be below entry");
   if (!isSell && sl != null && sl >= entryPrice) errors.push("BUY stop loss must be below entry");
@@ -130,6 +130,20 @@ function validateMt5TradeSetup(args: {
     rr: rr ? Number(rr.toFixed(2)) : null,
     spreadPrice,
   };
+}
+
+async function fetchMarsHigherTimeframes(
+  mt5: Awaited<ReturnType<typeof ensureConnected>>,
+  symbol: string,
+) {
+  const [m5, m15, m30, h1, h4] = await Promise.all([
+    mt5.rates(symbol, "5m", 220).then(ratesToCandles),
+    mt5.rates(symbol, "15m", 220).then(ratesToCandles),
+    mt5.rates(symbol, "30m", 220).then(ratesToCandles),
+    mt5.rates(symbol, "1h", 220).then(ratesToCandles),
+    mt5.rates(symbol, "4h", 220).then(ratesToCandles),
+  ]);
+  return { m5, m15, m30, h1, h4 };
 }
 
 function netDealProfit(deal: { profit?: number; commission?: number; swap?: number }) {
@@ -180,6 +194,10 @@ const StartInput = z.object({
   early_exit_on_reversal: z.boolean().default(true), // in-profit + reversal signal → close now
   extend_on_high_confidence: z.boolean().default(true), // in-profit + same-side high conf → extend expiry
   balance_conscious_volume: z.boolean().default(true), // scale lots by available / balance
+  time_exit_enabled: z.boolean().default(false), // false = SL/TP/basket only; true = 10-candle expiry overlay
+  mars4_max_positions: z.number().int().min(1).max(20).default(10),
+  mars4_basket_profit_usd: z.number().min(0).default(0),
+  mars4_basket_stop_usd: z.number().min(0).default(0),
 });
 
 // ── Public server functions ──────────────────────────────────────────────
@@ -211,6 +229,10 @@ export const mt5StartBot = createServerFn({ method: "POST" })
           early_exit_on_reversal: data.early_exit_on_reversal,
           extend_on_high_confidence: data.extend_on_high_confidence,
           balance_conscious_volume: data.balance_conscious_volume,
+          time_exit_enabled: data.time_exit_enabled,
+          mars4_max_positions: data.mars4_max_positions,
+          mars4_basket_profit_usd: data.mars4_basket_profit_usd,
+          mars4_basket_stop_usd: data.mars4_basket_stop_usd,
         },
         server_loop_enabled: false,
         status: "running",
@@ -324,6 +346,11 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     const profitTargetUsd = Number(aiCfg.profit_target_usd ?? 0);
     const earlyExitOnReversal = aiCfg.early_exit_on_reversal !== false;
     const extendOnHighConf = aiCfg.extend_on_high_confidence !== false;
+    const timeExitEnabled = aiCfg.time_exit_enabled === true;
+    const mars4ConfiguredMaxPositions = Math.max(
+      1,
+      Math.min(20, Number(aiCfg.mars4_max_positions ?? 10)),
+    );
 
     // Quick reversal read using Mars1 (cheap, deterministic) — used ONLY for
     // in-profit position management, never to override the main strategy pick.
@@ -354,7 +381,10 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         expires_epoch:
           (pos as any).expires_epoch == null ? null : Number((pos as any).expires_epoch),
       };
-      const mark = markOpenPosition(like, last);
+      const mark = markOpenPosition(
+        timeExitEnabled ? like : { ...like, expires_epoch: null },
+        last,
+      );
       const externalTicket = (pos as any).external_contract_id
         ? Number((pos as any).external_contract_id)
         : null;
@@ -549,6 +579,7 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         ? Math.min(0.98, minConfidence + 0.1)
         : minConfidence;
     const symbol = (bot as any).symbol as string;
+    const spreadPrice = symInfo ? Number(symInfo.spread ?? 0) * Number(symInfo.point ?? 0) : 0;
 
     // Always compute base OB/FVG so activity logs still get zone info
     const obFvgAnalysis = analyze(candles);
@@ -606,7 +637,20 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         livePromise = import("@/lib/strategies/mars").then((m) => m.analyzeMars2(candles, symbol));
       } else if (strategyMode === "mars3") {
         livePromise = import("@/lib/strategies/mars").then((m) =>
-          m.analyzeMars3(candles, { balance: available, symbolHint: symbol }),
+          fetchMarsHigherTimeframes(mt5, symbol).then((higherTimeframes) =>
+            m.analyzeMars3(candles, { balance: available, symbolHint: symbol, higherTimeframes }),
+          ),
+        );
+      } else if (strategyMode === "mars4") {
+        livePromise = import("@/lib/strategies/mars").then((m) =>
+          fetchMarsHigherTimeframes(mt5, symbol).then((higherTimeframes) =>
+            m.analyzeMars4(candles, {
+              balance: available,
+              symbolHint: symbol,
+              higherTimeframes,
+              spreadPrice,
+            }),
+          ),
         );
       } else if (strategyMode === "titan1") {
         livePromise = import("@/lib/strategies/titan1").then((m) => {
@@ -717,6 +761,34 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         .update({ last_tick_at: new Date().toISOString(), current_price: last.close } as any)
         .eq("id", data.id);
       return { ok: true, traded: false, decision };
+    }
+
+    if (strategyMode === "mars4") {
+      const currentOpen = (openRows ?? []).filter((p: any) => String(p.status ?? "open") === "open");
+      const maxFromAnalysis = Number((decision as any).analysis?.maxScalePositions ?? mars4ConfiguredMaxPositions);
+      const maxMars4Positions = Math.min(mars4ConfiguredMaxPositions, maxFromAnalysis);
+      const sameSideOpen = currentOpen.filter((p: any) => p.direction === decision.direction);
+      const oppositeOpen = currentOpen.filter((p: any) => p.direction !== decision.direction);
+      const scaleAllowed = (decision as any).analysis?.scaleAllowed !== false;
+      if (!scaleAllowed || oppositeOpen.length > 0 || sameSideOpen.length >= maxMars4Positions) {
+        await supabaseAdmin.from("bot_activity").insert({
+          ...commonLog,
+          action: "SKIP",
+          direction: decision.direction,
+          entry_price: decision.entryPrice,
+          stake: null,
+          stop_loss: decision.stopLoss,
+          take_profit: decision.takeProfit,
+          pnl: null,
+          reasoning: `Mars4 scaling blocked — scale=${scaleAllowed}, same-side ${sameSideOpen.length}/${maxMars4Positions}, opposite ${oppositeOpen.length}. ${decision.reasoning}`,
+          risk_check: `Mars4 controlled basket guard | Available ${available.toFixed(2)} USD`,
+        } as any);
+        await supabaseAdmin
+          .from("bot_runs")
+          .update({ last_tick_at: new Date().toISOString(), current_price: last.close } as any)
+          .eq("id", data.id);
+        return { ok: true, traded: false, skipped: "mars4_basket_guard", decision };
+      }
     }
 
     // 3) Execute — MT5 market order with SL/TP
@@ -830,7 +902,7 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
 
     // Use adjusted direction for the position and activity log
     const finalDirection = adjustedDirection;
-    const expiresEpoch = last.epoch + BOT_MAX_HOLD_CANDLES * tfSec;
+    const expiresEpoch = timeExitEnabled ? last.epoch + BOT_MAX_HOLD_CANDLES * tfSec : null;
     await supabaseAdmin.from("bot_positions").insert({
       user_id: context.userId,
       bot_run_id: data.id,

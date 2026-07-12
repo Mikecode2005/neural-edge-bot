@@ -50,6 +50,11 @@ export const STRATEGY_CATALOG: { id: StrategyKind; label: string; description: s
     label: "Mars3",
     description: "Mars1 optimised: pullback-confirmed entries, 1.8×ATR SL / 2.5RR, balance-aware volume rescaling",
   },
+  {
+    id: "mars4",
+    label: "Mars4",
+    description: "Microstructure Intelligence Engine: weighted MTF confirmation + adaptive 1m execution scaling",
+  },
 ];
 
 /** Strategy combinations for multi-strategy setups */

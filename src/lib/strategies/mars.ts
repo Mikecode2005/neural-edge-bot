@@ -162,11 +162,57 @@ function detectOneSecondVol(candles: Candle[], symbolHint?: string): boolean {
  */
 export interface Mars3Result extends LiveAnalysis {
   volumeMultiplier: number;
+  mtfAgreement?: number;
+  rr?: number;
+}
+
+export type MarsHigherTimeframeKey = "m5" | "m15" | "m30" | "h1" | "h4";
+
+export type MarsHigherTimeframes = Partial<Record<MarsHigherTimeframeKey, Candle[]>>;
+
+interface MarsMtfVote {
+  key: MarsHigherTimeframeKey;
+  direction: "BUY" | "SELL" | "WAIT";
+  confidence: number;
+  trend: "up" | "down";
+}
+
+function directionFromAnalysis(a: LiveAnalysis): "BUY" | "SELL" | "WAIT" {
+  if (a.decision === "BUY" || a.decision === "SELL") return a.decision;
+  if (a.trend === "up" && a.ema20 >= a.ema50) return "BUY";
+  if (a.trend === "down" && a.ema20 <= a.ema50) return "SELL";
+  return "WAIT";
+}
+
+function summarizeHigherTimeframes(htf?: MarsHigherTimeframes): MarsMtfVote[] {
+  if (!htf) return [];
+  const keys: MarsHigherTimeframeKey[] = ["m5", "m15", "m30", "h1", "h4"];
+  return keys.flatMap((key) => {
+    const cs = htf[key];
+    if (!cs || cs.length < 60) return [];
+    const a = analyze(cs.slice(-220));
+    return [{ key, direction: directionFromAnalysis(a), confidence: a.confidence, trend: a.trend }];
+  });
+}
+
+function mtfAgreementFor(direction: "BUY" | "SELL", votes: MarsMtfVote[]) {
+  if (!votes.length) return { aligned: 0, total: 0, requiredOk: true, note: "" };
+  const aligned = votes.filter((v) => v.direction === direction).length;
+  const must = new Map(votes.map((v) => [v.key, v.direction]));
+  const m5Ok = must.get("m5") === direction;
+  const m15Ok = must.get("m15") === direction;
+  const requiredOk = m5Ok && m15Ok && aligned >= Math.min(3, votes.length);
+  return {
+    aligned,
+    total: votes.length,
+    requiredOk,
+    note: ` | MTF ${aligned}/${votes.length} aligned${m5Ok && m15Ok ? "" : " (M5/M15 not both aligned)"}`,
+  };
 }
 
 export function analyzeMars3(
   candles: Candle[],
-  opts: { balance?: number; baseVolume?: number; symbolHint?: string } = {},
+  opts: { balance?: number; baseVolume?: number; symbolHint?: string; higherTimeframes?: MarsHigherTimeframes } = {},
 ): Mars3Result {
   const window = candles.slice(-220);
   const ob = analyze(window);
@@ -203,6 +249,8 @@ export function analyzeMars3(
   });
   const pool = filtered.length ? filtered : tradable;
   const best = pool.sort((a, b) => b.confidence - a.confidence)[0];
+  const votes = summarizeHigherTimeframes(opts.higherTimeframes);
+  const mtf = best.decision === "BUY" || best.decision === "SELL" ? mtfAgreementFor(best.decision, votes) : { aligned: 0, total: votes.length, requiredOk: true, note: "" };
 
   // Pullback-confirmation gate — "don't chase the tip"
   let pullbackOk = true;
@@ -228,14 +276,15 @@ export function analyzeMars3(
     }
   }
 
-  // Widen SL to 1.8×ATR, extend TP to 2.5× that (RR ≈ 2.5).
+  // Balance-aware RR: normal/high confidence uses 1:1, strongest MTF-confirmed setups use 1:2.
   const atr14 = best.atr14 || 0;
   const isBuy = best.decision === "BUY";
   let entry = best.entry;
   let sl = best.sl;
   let tp = best.tp;
   const slMult = 1.8;
-  const tpMult = 4.5; // 1.8 * 2.5 = 4.5×ATR reward for a 1.8×ATR risk
+  const rr = best.confidence >= 0.8 && (!mtf.total || mtf.aligned >= 4) ? 2 : 1;
+  const tpMult = slMult * rr;
   if (entry != null && atr14 > 0) {
     sl = isBuy ? entry - slMult * atr14 : entry + slMult * atr14;
     tp = isBuy ? entry + tpMult * atr14 : entry - tpMult * atr14;
@@ -248,11 +297,12 @@ export function analyzeMars3(
   // Confidence rescored: reward RR upgrade, penalise chase-entries.
   let confidence = best.confidence;
   if (!pullbackOk) confidence *= 0.6;
+  if (mtf.total) confidence *= mtf.requiredOk ? 1.04 : 0.55;
   confidence = Math.min(0.97, confidence + 0.03); // small bump for tighter framework
 
   // Balance gate
   const belowBalanceGate = confidence < balanceGate;
-  const decision = pullbackOk && !belowBalanceGate ? best.decision : ("WAIT" as const);
+  const decision = pullbackOk && mtf.requiredOk && !belowBalanceGate ? best.decision : ("WAIT" as const);
 
   const gateNote = belowBalanceGate
     ? ` | Balance-gate: need conf ≥ ${(balanceGate * 100).toFixed(0)}% (bal $${balance.toFixed(2)}).`
@@ -266,7 +316,101 @@ export function analyzeMars3(
     tp,
     strategy: "mars3",
     confidence,
-    rationale: `[Mars3 · ${best.strategy}] ${best.rationale} | SL/TP 1.8x/4.5xATR (RR 2.5) · lot×${volumeMultiplier.toFixed(2)}${pullbackNote}${gateNote}`,
+    rationale: `[Mars3 · ${best.strategy}] ${best.rationale} | SL ${slMult.toFixed(1)}xATR · TP RR ${rr}:1 · lot×${volumeMultiplier.toFixed(2)}${mtf.note}${pullbackNote}${gateNote}`,
     volumeMultiplier,
+    mtfAgreement: mtf.total ? mtf.aligned / mtf.total : undefined,
+    rr,
+  };
+}
+
+export interface Mars4Result extends Mars3Result {
+  scaleAllowed: boolean;
+  maxScalePositions: number;
+  basketProfitTargetUsd: number;
+  basketStopUsd: number;
+  mtfScore: number;
+  microScore: number;
+}
+
+export function analyzeMars4(
+  candles: Candle[],
+  opts: {
+    balance?: number;
+    symbolHint?: string;
+    higherTimeframes?: MarsHigherTimeframes;
+    spreadPrice?: number;
+  } = {},
+): Mars4Result {
+  const window = candles.slice(-240);
+  const base = analyzeMars3(window, {
+    balance: opts.balance,
+    symbolHint: opts.symbolHint,
+    higherTimeframes: opts.higherTimeframes,
+  });
+  const last = window.at(-1);
+  const prev = window.at(-2);
+  const closes = window.slice(-8).map((c) => c.close);
+  const atr = Math.max(1e-9, base.atr14 || 0);
+  const spread = Math.max(0, Number(opts.spreadPrice ?? 0));
+  const spreadOk = spread <= atr * 0.22;
+
+  let microScore = 0;
+  if (last && prev && closes.length >= 4 && base.decision !== "WAIT") {
+    const directionSign = base.decision === "BUY" ? 1 : -1;
+    const impulse = (last.close - prev.close) * directionSign;
+    const range = Math.max(1e-9, last.high - last.low);
+    const closeLocation = base.decision === "BUY"
+      ? (last.close - last.low) / range
+      : (last.high - last.close) / range;
+    const shortSlope = (closes.at(-1)! - closes.at(-4)!) * directionSign;
+    const notOverextended = Math.abs(last.close - Number(base.entry ?? last.close)) <= atr * 1.6;
+    microScore += impulse > 0 ? 0.25 : 0;
+    microScore += shortSlope > 0 ? 0.25 : 0;
+    microScore += closeLocation >= 0.55 ? 0.25 : 0;
+    microScore += notOverextended ? 0.15 : 0;
+    microScore += spreadOk ? 0.1 : -0.25;
+  }
+  microScore = Math.max(0, Math.min(1, microScore));
+
+  const mtfScore = Number(base.mtfAgreement ?? 0.6);
+  const weightedConfidence = Math.min(0.99, base.confidence * 0.72 + mtfScore * 0.18 + microScore * 0.1);
+  const rr = weightedConfidence >= 0.8 && mtfScore >= 0.75 ? 2 : 1;
+  const isBuy = base.decision === "BUY";
+  const entry = base.entry ?? last?.close;
+  let sl = base.sl;
+  let tp = base.tp;
+  if (entry != null && atr > 0 && base.decision !== "WAIT") {
+    const slDist = Math.max(1.2 * atr, spread * 3);
+    sl = isBuy ? entry - slDist : entry + slDist;
+    tp = isBuy ? entry + slDist * rr : entry - slDist * rr;
+  }
+
+  const balance = Math.max(0, Number(opts.balance ?? 0));
+  const maxScalePositions = weightedConfidence >= 0.95 ? 10 : weightedConfidence >= 0.8 ? 6 : 3;
+  const basketProfitTargetUsd = Math.max(1, Number((balance * (weightedConfidence >= 0.8 ? 0.006 : 0.003)).toFixed(2)));
+  const basketStopUsd = Math.max(2, Number((balance * 0.015).toFixed(2)));
+  const scaleAllowed = base.decision !== "WAIT" && weightedConfidence >= 0.65 && microScore >= 0.45 && spreadOk;
+  const decision = scaleAllowed ? base.decision : ("WAIT" as const);
+  const volumeMultiplier = weightedConfidence >= 0.95 ? 1 : weightedConfidence >= 0.8 ? 0.75 : 0.45;
+
+  return {
+    ...base,
+    decision,
+    entry,
+    sl,
+    tp,
+    tp1: tp,
+    tp2: tp,
+    strategy: "mars4",
+    confidence: weightedConfidence,
+    rationale: `[Mars4 Microstructure] ${base.rationale} | MTF score ${(mtfScore * 100).toFixed(0)}% · micro ${(microScore * 100).toFixed(0)}% · RR ${rr}:1 · scale ${scaleAllowed ? "allowed" : "blocked"}${spreadOk ? "" : " · spread too high"}`,
+    volumeMultiplier,
+    rr,
+    mtfScore,
+    microScore,
+    scaleAllowed,
+    maxScalePositions,
+    basketProfitTargetUsd,
+    basketStopUsd,
   };
 }

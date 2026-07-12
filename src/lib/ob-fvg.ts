@@ -34,7 +34,8 @@ export type StrategyKind =
   | "titan2"
   | "mars1"
   | "mars2"
-  | "mars3";
+  | "mars3"
+  | "mars4";
 
 export type { Candle } from "./deriv-ws";
 

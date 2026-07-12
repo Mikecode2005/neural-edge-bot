@@ -68,7 +68,7 @@ interface BotRow {
   last_tick_at: string | null;
   last_error: string | null;
   account_balance?: number;
-  ai_config?: { volume?: number };
+  ai_config?: { volume?: number; time_exit_enabled?: boolean; mars4_max_positions?: number };
 }
 
 interface OpenPos {
@@ -211,6 +211,10 @@ function Mt5DirectPage() {
     early_exit_on_reversal: true,
     extend_on_high_confidence: true,
     balance_conscious_volume: true,
+    time_exit_enabled: false,
+    mars4_max_positions: 10,
+    mars4_basket_profit_usd: 0,
+    mars4_basket_stop_usd: 0,
   });
 
   // ── Data loading ──
@@ -575,6 +579,7 @@ function Mt5DirectPage() {
                 <option value="mars1">Mars1 (Classic 3-Detector Multi)</option>
                 <option value="mars2">Mars2 (V25(1s) / V15(1s) Tuned)</option>
                 <option value="mars3">Mars3 (Mars1 + Pullback-Confirm · 2.5RR · Balance-Aware)</option>
+                <option value="mars4">Mars4 (Microstructure Intelligence Engine)</option>
                 <option value="multi">Multi-Strategy Consensus (≥5 agree)</option>
                 <option value="titan1">TITAN1 (Elite Confluence)</option>
                 <option value="titan2">TITAN2 (Adaptive Momentum)</option>
@@ -661,6 +666,69 @@ function Mt5DirectPage() {
                 </span>
               </span>
             </label>
+            <label className="flex items-start gap-2 text-xs cursor-pointer pt-4">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.time_exit_enabled}
+                onChange={(e) => setForm({ ...form, time_exit_enabled: e.target.checked })}
+              />
+              <span>
+                Use 10-candle time exit
+                <span className="block text-[10px] text-muted-foreground">
+                  Off = close only by SL/TP/profit/basket rules.
+                </span>
+              </span>
+            </label>
+            {form.strategy_mode === "mars4" && (
+              <>
+                <div>
+                  <Label className="text-xs">Mars4 Max Positions</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={form.mars4_max_positions}
+                    onChange={(e) =>
+                      setForm({ ...form, mars4_max_positions: Number(e.target.value) })
+                    }
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Controlled scaling cap; each entry still needs MTF + micro confirmation.
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs">Mars4 Basket TP ($)</Label>
+                  <Input
+                    type="number"
+                    step={0.5}
+                    min={0}
+                    value={form.mars4_basket_profit_usd}
+                    onChange={(e) =>
+                      setForm({ ...form, mars4_basket_profit_usd: Number(e.target.value) })
+                    }
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    0 uses Mars4 adaptive basket target.
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs">Mars4 Basket Stop ($)</Label>
+                  <Input
+                    type="number"
+                    step={0.5}
+                    min={0}
+                    value={form.mars4_basket_stop_usd}
+                    onChange={(e) =>
+                      setForm({ ...form, mars4_basket_stop_usd: Number(e.target.value) })
+                    }
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    0 uses Mars4 adaptive emergency basket stop.
+                  </p>
+                </div>
+              </>
+            )}
           </div>
 
           <Button onClick={onCreate} className="gap-1.5">
@@ -735,6 +803,7 @@ function Mt5DirectPage() {
                           mars1: "Mars1",
                           mars2: "Mars2",
                           mars3: "Mars3",
+                          mars4: "Mars4",
                           titan1: "TITAN1",
                           titan2: "TITAN2",
                           multi: "Consensus ≥5",
