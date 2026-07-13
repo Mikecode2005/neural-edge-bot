@@ -104,3 +104,6 @@ src/
 ├── mt5-direct/        # MT5 Direct module
 ├── lib/               # Core libraries (Deriv WS, OB+FVG, AI, bots)
 └── integrations/      # Supabase client
+
+cd /c/cloudflared
+./cloudflared.exe tunnel --url http://localhost:8765
