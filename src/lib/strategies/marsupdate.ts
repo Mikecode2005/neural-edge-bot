@@ -328,53 +328,73 @@ export function analyzeMars3(
 // ---------------------------------------------------------------------------
 // Mars4 — Adaptive Profile-Driven Strategy
 //
-// Per-symbol profiles from Bayesian optimizer results:
-//   vol_90       tp=4.0  sl=2.0  minRR=2.0  bestHour=2   bestDay=Wed
-//   vol_15_1s    tp=4.0  sl=1.5  minRR=2.0  bestHour=22  bestDay=Wed
-//   vol_75       tp=2.0  sl=1.25 minRR=1.5  bestHour=17  bestDay=Fri
-//   vol_100      tp=4.0  sl=1.5  minRR=1.0  bestHour=6   bestDay=Mon
-//   vol_90_1s    tp=2.5  sl=1.75 minRR=1.0  bestHour=2   bestDay=Thu
-//   vol_50       tp=3.0  sl=2.0  minRR=1.0  bestHour=23  bestDay=Sat
-//   vol_100_1s   tp=3.0  sl=2.0  minRR=1.5  bestHour=23  bestDay=Sun
-//   vol_25_1s    tp=3.5  sl=2.0  minRR=1.5  bestHour=21  bestDay=Tue
-//   vol_30       tp=4.0  sl=2.0  minRR=1.5  bestHour=16  bestDay=Thu
+// Architecture (two-layer):
+//   Market Data → VolatilityProfile (per-symbol optimised params)
+//               → Mars3 core signal
+//               → 5-gate quality filter (RSI alignment, BOS/CHoCH, pullback,
+//                  spread, session timing)
+//               → Adaptive SL/TP from profile
+//               → Confidence scored without any hardcoded floor
+//               → Caller supplies minConfidence via opts
+//
+// Per-symbol profiles come from the Bayesian optimizer results:
+//   vol_90       : scan=15s  lb=512  tp=4.0  sl=2.0  bestHour=2   bestDay=Wed
+//   vol_15_1s    : scan=15s  lb=32   tp=4.0  sl=1.5  bestHour=22  bestDay=Wed
+//   vol_75       : scan=20s  lb=128  tp=2.0  sl=1.25 bestHour=17  bestDay=Fri
+//   vol_100      : scan=15s  lb=512  tp=4.0  sl=1.5  bestHour=6   bestDay=Mon
+//   vol_90_1s    : scan=20s  lb=448  tp=2.5  sl=1.75 bestHour=2   bestDay=Thu
+//   vol_50       : scan=20s  lb=512  tp=3.0  sl=2.0  bestHour=23  bestDay=Sat
+//   vol_100_1s   : scan=60s  lb=192  tp=3.0  sl=2.0  bestHour=23  bestDay=Sun
+//   vol_25_1s    : scan=20s  lb=128  tp=3.5  sl=2.0  bestHour=21  bestDay=Tue
+//   vol_30       : scan=15s  lb=192  tp=4.0  sl=2.0  bestHour=16  bestDay=Thu
+//
+// Session timing tiers (applied to confidence, not used as a hard block):
+//   PRIME   : best hour AND best weekday for that symbol  → +8% conf bonus
+//   GOOD    : best hour OR best weekday                   → no change
+//   OFF_PEAK: neither                                      → −8% conf penalty
+//
+// Bot trade history findings (R_10, R_75 real trades):
+//   Winning pattern : OB+FVG zone + BOS/CHoCH + RSI directionally aligned
+//   Loss pattern    : RSI 60–70 on PUT entries (momentum not yet reversed)
+//   → RSI gate: BUY only when rsi14 ≤ 55, SELL only when rsi14 ≥ 45
+//   → BOS/CHoCH present adds +5% confidence bonus
 // ---------------------------------------------------------------------------
 
 interface VolatilityProfileParams {
-  /** Deriv symbol substrings to match (lowercase) */
+  /** Deriv symbol substring to match (lowercase) */
   match: string[];
   tpMult: number;
   slMult: number;
   /** Min R:R ratio — skip trade if tp/sl distance ratio falls below this */
   minRR: number;
-  /** Best UTC hours for this symbol */
+  /** Best UTC hour(s) for this symbol */
   bestHours: number[];
-  /** Best weekdays 0=Sun 1=Mon … 6=Sat (getUTCDay encoding) */
+  /** Best weekday(s) 0=Sun 1=Mon … 6=Sat */
   bestDays: number[];
 }
 
 const VOLATILITY_PROFILES: VolatilityProfileParams[] = [
-  // vol_15_1s  — score 129, WR 53%, PF 3.02
+  // vol_15_1s  — score 129, WR 53%, PF 3.02, bestHour 22, bestDay Wed(3)
   { match: ["15", "1s", "1hz15"], tpMult: 4.0, slMult: 1.5, minRR: 2.0, bestHours: [22, 21, 23], bestDays: [3, 2] },
-  // vol_25_1s  — score 81, WR 58%, PF 2.41
+  // vol_25_1s  — score 81, WR 58%, PF 2.41, bestHour 21, bestDay Tue(2)
   { match: ["25", "1s", "1hz25"], tpMult: 3.5, slMult: 2.0, minRR: 1.5, bestHours: [21, 20, 22], bestDays: [2, 3] },
-  // vol_30     — score 121, WR 57%, PF 2.74
+  // vol_30     — score 121, WR 57%, PF 2.74, bestHour 16, bestDay Thu(4)
   { match: ["30"], tpMult: 4.0, slMult: 2.0, minRR: 1.5, bestHours: [16, 15, 17], bestDays: [4, 3] },
-  // vol_50     — score 116, WR 64%, PF 2.69
+  // vol_50     — score 116, WR 64%, PF 2.69, bestHour 23, bestDay Sat(6)
   { match: ["50"], tpMult: 3.0, slMult: 2.0, minRR: 1.0, bestHours: [23, 22, 0], bestDays: [6, 5] },
-  // vol_75     — score 95, WR 61%, PF 2.61
+  // vol_75     — score 95, WR 61%, PF 2.61, bestHour 17, bestDay Fri(5)
   { match: ["75"], tpMult: 2.0, slMult: 1.25, minRR: 1.5, bestHours: [17, 16, 18], bestDays: [5, 4] },
-  // vol_90_1s  — score 92, WR 63%, PF 2.42 (must be before vol_90 — longer match wins)
+  // vol_90_1s  — score 92, WR 63%, PF 2.42, bestHour 2, bestDay Thu(4)
   { match: ["90", "1s", "1hz90"], tpMult: 2.5, slMult: 1.75, minRR: 1.0, bestHours: [2, 1, 3], bestDays: [4, 3] },
-  // vol_90     — score 128, WR 59%
+  // vol_90     — score 128, WR 59%, PF tracked, bestHour 2, bestDay Wed(3)
   { match: ["90"], tpMult: 4.0, slMult: 2.0, minRR: 2.0, bestHours: [2, 1, 3], bestDays: [3, 2] },
-  // vol_100_1s — score 61, WR 63%, PF 2.60 (must be before vol_100)
+  // vol_100_1s — score 61, WR 63%, PF 2.60, bestHour 23, bestDay Sun(0)
   { match: ["100", "1s", "1hz100"], tpMult: 3.0, slMult: 2.0, minRR: 1.5, bestHours: [23, 22, 0], bestDays: [0, 6] },
-  // vol_100    — score 101, WR 51%, PF 2.73
+  // vol_100    — score 101, WR 51%, PF 2.73, bestHour 6, bestDay Mon(1)
   { match: ["100"], tpMult: 4.0, slMult: 1.5, minRR: 1.0, bestHours: [6, 5, 7], bestDays: [1, 2] },
 ];
 
-/** Default fallback profile when no symbolHint matches */
+/** Default fallback profile when no symbol hint matches */
 const DEFAULT_PROFILE: VolatilityProfileParams = {
   match: [],
   tpMult: 3.0,
@@ -384,15 +404,10 @@ const DEFAULT_PROFILE: VolatilityProfileParams = {
   bestDays: [1, 2, 3, 4],
 };
 
-/**
- * Resolve the best-matching profile for a given symbolHint.
- * Uses longest-match-token disambiguation so "vol_90_1s" does not
- * fall through to the plain "vol_90" profile.
- */
 function resolveProfile(symbolHint?: string): VolatilityProfileParams {
   if (!symbolHint) return DEFAULT_PROFILE;
   const s = symbolHint.toLowerCase();
-  // Sort by the longest matching token to give most-specific profile priority
+  // Match longest/most-specific profile first to avoid vol_90 swallowing vol_90_1s
   const sorted = [...VOLATILITY_PROFILES].sort((a, b) => {
     const aScore = a.match.reduce((best, m) => Math.max(best, s.includes(m) ? m.length : 0), 0);
     const bScore = b.match.reduce((best, m) => Math.max(best, s.includes(m) ? m.length : 0), 0);
@@ -404,10 +419,10 @@ function resolveProfile(symbolHint?: string): VolatilityProfileParams {
   return DEFAULT_PROFILE;
 }
 
-/** Session timing tier — derived from profile's best hours/days */
+/** Session timing tier based on optimised best-hour/day per symbol */
 type SessionTier = "PRIME" | "GOOD" | "OFF_PEAK";
 
-function computeSessionTier(nowEpoch: number, profile: VolatilityProfileParams): SessionTier {
+function sessionTier(nowEpoch: number, profile: VolatilityProfileParams): SessionTier {
   const d = new Date(nowEpoch * 1000);
   const hour = d.getUTCHours();
   const day  = d.getUTCDay(); // 0=Sun … 6=Sat
@@ -439,15 +454,10 @@ export interface Mars4Result extends Mars3Result {
 /**
  * Mars4 — Adaptive Profile-Driven Strategy
  *
- * Symbol-aware: resolves a per-symbol VolatilityProfile from `symbolHint` and
- * uses its Bayesian-optimised TP/SL multipliers, best-hour/day session tiers,
- * and minRR gate.
- *
- * opts.minConfidence  : caller-supplied confidence floor (0–1). No hardcoded
- *                       minimum — pass the bot's configured min_confidence.
- * opts.nowEpoch       : current UTC epoch (seconds). Falls back to
- *                       Date.now()/1000 when omitted (fully deterministic in
- *                       tests when supplied).
+ * opts.minConfidence   : caller-supplied confidence floor (0–1). No default is
+ *                        imposed here — you decide how strict to be.
+ * opts.nowEpoch        : current UTC epoch (seconds). Used for session timing.
+ *                        Falls back to Date.now()/1000 when omitted.
  */
 export function analyzeMars4(
   candles: Candle[],
@@ -456,7 +466,7 @@ export function analyzeMars4(
     symbolHint?: string;
     higherTimeframes?: MarsHigherTimeframes;
     spreadPrice?: number;
-    /** Confidence floor, 0–1. No hardcoded minimum. */
+    /** Your confidence floor, 0–1. No hardcoded minimum. */
     minConfidence?: number;
     /** Current UTC epoch in seconds for session-tier calculation. */
     nowEpoch?: number;
@@ -465,7 +475,8 @@ export function analyzeMars4(
   // ── 0. Resolve per-symbol optimised profile ────────────────────────────
   const profile = resolveProfile(opts.symbolHint);
 
-  // Adaptive lookback: longer window for profiles trained on 512 candles
+  // Use a longer lookback window when the profile was trained on 512 candles.
+  // We cap at 512 to stay consistent with the optimizer results.
   const lookback = Math.min(512, Math.max(220, profile.tpMult >= 3.5 ? 420 : 280));
   const window = candles.slice(-lookback);
 
@@ -474,7 +485,7 @@ export function analyzeMars4(
     balance: opts.balance,
     symbolHint: opts.symbolHint,
     higherTimeframes: opts.higherTimeframes,
-  });
+  }) as LiveAnalysis & Mars3Result;
 
   const last   = window.at(-1);
   const prev   = window.at(-2);
@@ -483,28 +494,33 @@ export function analyzeMars4(
   const spread = Math.max(0, Number(opts.spreadPrice ?? 0));
   const isBuy  = base.decision === "BUY";
 
-  // ── 2. Gate 4 — Spread ────────────────────────────────────────────────
-  // Pass automatically when spread is 0 or not supplied
-  const spreadOk = spread === 0 ? true : spread <= atr * 0.30;
+  // ── 2. Gate 1 — Spread check ──────────────────────────────────────────
+  // Allow up to 30% of ATR as spread (tighter than Mars3's 22% because we
+  // use wider TP multiples from the profile).
+  const spreadOk = spread <= atr * 0.30;
 
-  // ── 3. Gate 1 — RSI directional alignment ─────────────────────────────
-  // Loss pattern from bot history: RSI 60–70 on PUT entries → gate them out
-  //   BUY  → RSI ≤ 55 (room to rise, not overbought)
-  //   SELL → RSI ≥ 45 (room to fall, not oversold)
+  // ── 3. Gate 2 — RSI directional alignment ─────────────────────────────
+  // Bot-history finding: losses on R_10 happened at RSI 60–70 on PUT entries.
+  // Require RSI to be on the correct side before confirming direction.
+  //   BUY  → RSI ≤ 55 (price has room to recover, not already overbought)
+  //   SELL → RSI ≥ 45 (price has room to fall, not already oversold)
   const rsi = base.rsi14 ?? 50;
   const rsiAligned =
     base.decision === "WAIT" ||
     (isBuy  && rsi <= 55) ||
     (!isBuy && rsi >= 45);
 
-  // ── 4. Gate 2 — BOS / CHoCH structural confirmation ───────────────────
+  // ── 4. Gate 3 — BOS / CHoCH structural confirmation ───────────────────
+  // Bot history: BOS/CHoCH YES = strong corroboration of direction.
+  // We check this via the rationale string since LiveAnalysis doesn't expose
+  // a dedicated flag — the ob-fvg detector embeds it in the rationale.
   const rationaleLower = (base.rationale ?? "").toLowerCase();
   const bosChochPresent =
     rationaleLower.includes("bos") ||
     rationaleLower.includes("choch") ||
     rationaleLower.includes("chöch");
 
-  // ── 5. Gate 3 — Pullback / zone re-entry ──────────────────────────────
+  // ── 5. Gate 4 — Pullback / zone re-entry (same as Mars3) ──────────────
   let pullbackOk = true;
   if (last && prev && base.decision !== "WAIT") {
     const range = Math.max(1e-9, prev.high - prev.low);
@@ -523,17 +539,17 @@ export function analyzeMars4(
     }
   }
 
-  // ── 6. Micro-structure score ───────────────────────────────────────────
+  // ── 6. Micro-structure score (impulse, slope, close location) ─────────
   let microScore = 0;
   if (last && prev && closes.length >= 4 && base.decision !== "WAIT") {
-    const dirSign     = isBuy ? 1 : -1;
-    const impulse     = (last.close - prev.close) * dirSign;
-    const barRange    = Math.max(1e-9, last.high - last.low);
-    const closeLoc    = isBuy
+    const dirSign      = isBuy ? 1 : -1;
+    const impulse      = (last.close - prev.close) * dirSign;
+    const barRange     = Math.max(1e-9, last.high - last.low);
+    const closeLoc     = isBuy
       ? (last.close - last.low) / barRange
       : (last.high - last.close) / barRange;
-    const shortSlope  = (closes.at(-1)! - closes.at(-4)!) * dirSign;
-    const notExtended = Math.abs(last.close - Number(base.entry ?? last.close)) <= atr * 1.8;
+    const shortSlope   = (closes.at(-1)! - closes.at(-4)!) * dirSign;
+    const notExtended  = Math.abs(last.close - Number(base.entry ?? last.close)) <= atr * 1.8;
     microScore += impulse    > 0    ? 0.25 : 0;
     microScore += shortSlope > 0    ? 0.25 : 0;
     microScore += closeLoc   >= 0.5 ? 0.20 : 0;
@@ -546,28 +562,34 @@ export function analyzeMars4(
   const mtfScore = Number(base.mtfAgreement ?? 0.5);
 
   // ── 8. Confidence synthesis ───────────────────────────────────────────
-  // Base: Mars3×0.60 + MTF×0.20 + micro×0.10
-  // Bonuses: BOS/CHoCH +0.05, RSI aligned +0.03, pullback OK +0.02
-  // No hardcoded floor — caller supplies minConfidence
+  // Base weights (no hardcoded floor — caller provides minConfidence):
+  //   Mars3 core conf : 60%
+  //   MTF agreement   : 20%
+  //   Micro-structure : 10%
+  //   BOS/CHoCH bonus : +5% when present
+  //   RSI aligned     : +3% bonus when aligned
+  //   Pullback bonus  : +2% when clearly in zone (not just barely ok)
   let confidence = Math.min(
     0.99,
     base.confidence * 0.60 + mtfScore * 0.20 + microScore * 0.10,
   );
-  if (bosChochPresent)                        confidence = Math.min(0.99, confidence + 0.05);
+  if (bosChochPresent)                       confidence = Math.min(0.99, confidence + 0.05);
   if (rsiAligned && base.decision !== "WAIT") confidence = Math.min(0.99, confidence + 0.03);
   if (pullbackOk && base.decision !== "WAIT") confidence = Math.min(0.99, confidence + 0.02);
 
   // ── 9. Session timing tier adjustment ────────────────────────────────
-  const nowEpoch = opts.nowEpoch ?? Math.floor(Date.now() / 1000);
-  const tier     = computeSessionTier(nowEpoch, profile);
-  const tierAdj  = tier === "PRIME" ? 0.08 : tier === "OFF_PEAK" ? -0.08 : 0;
-  confidence     = Math.min(0.99, Math.max(0, confidence + tierAdj));
+  const nowEpoch   = opts.nowEpoch ?? Math.floor(Date.now() / 1000);
+  const tier       = sessionTier(nowEpoch, profile);
+  // Adjust confidence by tier — no hard block, just scoring signal
+  const tierAdj    = tier === "PRIME" ? 0.08 : tier === "OFF_PEAK" ? -0.08 : 0;
+  confidence       = Math.min(0.99, Math.max(0, confidence + tierAdj));
 
   // ── 10. Gate 5 — R:R check ───────────────────────────────────────────
+  // Profile defines optimal TP/SL multiples from optimizer results.
   const tpDist = atr * profile.tpMult;
-  const slDist = Math.max(atr * profile.slMult, spread > 0 ? spread * 3 : 0);
+  const slDist = Math.max(atr * profile.slMult, spread * 3);
   const rr     = slDist > 0 ? tpDist / slDist : 0;
-  const rrOk   = slDist > 0 && rr >= profile.minRR;
+  const rrOk   = rr >= profile.minRR;
 
   // ── 11. Build final SL/TP from profile ───────────────────────────────
   const entry = base.entry ?? last?.close;
@@ -579,23 +601,27 @@ export function analyzeMars4(
   }
 
   // ── 12. Final decision ────────────────────────────────────────────────
-  const minConf     = opts.minConfidence ?? 0;
-  const gatesPassed =
+  // All quality gates must pass. Confidence gate is caller-controlled via
+  // opts.minConfidence — if not supplied, no floor is applied.
+  const minConf      = opts.minConfidence ?? 0;
+  const gatesPassed  =
     base.decision !== "WAIT" &&
     rsiAligned &&
     pullbackOk &&
     spreadOk &&
     rrOk &&
     confidence >= minConf;
-  const decision = gatesPassed ? base.decision : ("WAIT" as const);
+  const decision     = gatesPassed ? base.decision : ("WAIT" as const);
 
   // ── 13. Position sizing ───────────────────────────────────────────────
+  // Scale lot size with confidence: higher confidence → larger fraction.
+  // Stays proportional — never a flat hardcoded multiplier.
   const volumeMultiplier =
     confidence >= 0.90 ? 1.00 :
     confidence >= 0.80 ? 0.80 :
     confidence >= 0.70 ? 0.60 : 0.40;
 
-  const balance = Math.max(0, Number(opts.balance ?? 0));
+  const balance          = Math.max(0, Number(opts.balance ?? 0));
   const maxScalePositions =
     confidence >= 0.90 ? 10 : confidence >= 0.80 ? 6 : confidence >= 0.70 ? 4 : 2;
   const basketProfitTargetUsd = Math.max(
@@ -607,15 +633,15 @@ export function analyzeMars4(
 
   // ── 14. Rationale ─────────────────────────────────────────────────────
   const gateLog = [
-    rsiAligned  ? null : `RSI ${rsi.toFixed(0)} misaligned`,
-    pullbackOk  ? null : "no pullback/zone",
-    spreadOk    ? null : "spread too wide",
-    rrOk        ? null : `RR ${rr.toFixed(2)} < min ${profile.minRR}`,
-    confidence >= minConf ? null : `conf ${(confidence * 100).toFixed(1)}% < floor ${(minConf * 100).toFixed(0)}%`,
+    rsiAligned       ? null : `RSI ${rsi.toFixed(0)} misaligned`,
+    pullbackOk       ? null : "no pullback/zone",
+    spreadOk         ? null : "spread too wide",
+    rrOk             ? null : `RR ${rr.toFixed(2)} < min ${profile.minRR}`,
+    confidence>=minConf ? null : `conf ${(confidence*100).toFixed(1)}% < floor ${(minConf*100).toFixed(0)}%`,
   ].filter(Boolean).join(", ");
 
   const rationale = [
-    `[Mars4·${opts.symbolHint ?? "?"}·${profile.match[0] ?? "default"}]`,
+    `[Mars4·${opts.symbolHint ?? "?"}]`,
     `${base.strategy} ${base.decision}`,
     `| conf ${(confidence * 100).toFixed(1)}%`,
     `| MTF ${(mtfScore * 100).toFixed(0)}%`,
@@ -623,7 +649,7 @@ export function analyzeMars4(
     `| RR ${rr.toFixed(2)}`,
     `| session ${tier}`,
     bosChochPresent ? "| BOS/CHoCH ✓" : "",
-    gateLog ? `| BLOCKED: ${gateLog}` : "| ALL GATES OK",
+    gateLog         ? `| BLOCKED: ${gateLog}` : "| ALL GATES OK",
   ].filter(Boolean).join(" ");
 
   return {

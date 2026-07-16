@@ -581,7 +581,7 @@ function Mt5DirectPage() {
                 <option value="mars3">
                   Mars3 (Mars1 + Pullback-Confirm · 2.5RR · Balance-Aware)
                 </option>
-                <option value="mars4">Mars4 (Microstructure Intelligence Engine)</option>
+                <option value="mars4">Mars4 (Symbol-Aware · Profile-Driven · 5-Gate)</option>
                 <option value="multi">Multi-Strategy Consensus (≥5 agree)</option>
                 <option value="titan1">TITAN1 (Elite Confluence)</option>
                 <option value="titan2">TITAN2 (Adaptive Momentum)</option>

@@ -661,6 +661,8 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
               symbolHint: symbol,
               higherTimeframes,
               spreadPrice,
+              nowEpoch: Math.floor(Date.now() / 1000),
+              minConfidence: streakThreshold,
             }),
           ),
         );

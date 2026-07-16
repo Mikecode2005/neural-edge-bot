@@ -57,7 +57,7 @@ export const STRATEGY_CATALOG: { id: StrategyKind; label: string; description: s
     id: "mars4",
     label: "Mars4",
     description:
-      "Microstructure Intelligence Engine: weighted MTF confirmation + adaptive 1m execution scaling",
+      "Symbol-aware adaptive strategy: per-pair volatility profiles, 5-gate filter (RSI/BOS/pullback/spread/RR), session timing tiers (PRIME/GOOD/OFF_PEAK), and profile-calibrated SL/TP from Bayesian optimizer results",
   },
 ];
 
