@@ -59,6 +59,12 @@ export const STRATEGY_CATALOG: { id: StrategyKind; label: string; description: s
     description:
       "Symbol-aware adaptive strategy: per-pair volatility profiles, 5-gate filter (RSI/BOS/pullback/spread/RR), session timing tiers (PRIME/GOOD/OFF_PEAK), and profile-calibrated SL/TP from Bayesian optimizer results",
   },
+  {
+    id: "mars5",
+    label: "Mars5",
+    description:
+      "Regime-first fluidity scraper: tight-range rejection entries, expanding-volatility momentum entries, and NORMAL-regime wait discipline",
+  },
 ];
 
 /** Strategy combinations for multi-strategy setups */

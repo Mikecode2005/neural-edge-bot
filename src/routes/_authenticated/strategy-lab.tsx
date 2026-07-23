@@ -59,7 +59,15 @@ function StrategyLabPage() {
         return;
       }
       const res = await fnRun({
-        data: { symbol, timeframe, candles, minScore, riskPerTrade: 1, maxHold: 20 },
+        data: {
+          symbol,
+          timeframe,
+          candles,
+          minScore,
+          riskPerTrade: 1,
+          maxHold: 20,
+          strategyMode,
+        },
       });
       setResult(res);
       toast.success(
@@ -142,7 +150,17 @@ function StrategyLabPage() {
                 <option value="multi">Multi-Strategy (Top 3)</option>
                 <option value="titan1">TITAN1 (Elite Confluence)</option>
                 <option value="titan2">TITAN2 (Adaptive Momentum)</option>
-                {STRATEGY_CATALOG.filter((s) => s.id !== "titan1" && s.id !== "titan2").map((s) => (
+                <option value="mars1">Mars1 (Classic 3-Detector Multi)</option>
+                <option value="mars2">Mars2 (V25(1s) / V15(1s) Tuned)</option>
+                <option value="mars3">Mars3 (Pullback-Confirm · 2.5RR)</option>
+                <option value="mars4">Mars4 (Symbol-Aware · Profile-Driven)</option>
+                <option value="mars5">Mars5 (Regime-First · Range/Momentum)</option>
+                {STRATEGY_CATALOG.filter(
+                  (s) =>
+                    !["titan1", "titan2", "mars1", "mars2", "mars3", "mars4", "mars5"].includes(
+                      s.id,
+                    ),
+                ).map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.label}
                   </option>

@@ -575,6 +575,65 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
     //    - specific catalog id (msnr-crt, apa, …) → analyzeEnsemble locked to
     //      just that strategy — no fall-through to multi.
     const strategyMode = String((botFresh as any)?.strategy_mode ?? "mars1");
+
+    // ── Active-trade focused health scan ──────────────────────────────────
+    // After marking all positions, if there are open positions, log a health
+    // diagnostics scan and skip fresh entry (unless the strategy explicitly
+    // allows scaling like Mars4).
+    const stillOpenPositions = (openRows ?? []).filter(
+      (p: any) => String(p.status ?? "open") === "open",
+    );
+    const strategyAllowsScaling = strategyMode === "mars4";
+    if (stillOpenPositions.length > 0 && !strategyAllowsScaling) {
+      let healthAnalysis: string;
+      try {
+        const { analyzeMars1 } = await import("@/lib/strategies/mars");
+        const m1 = analyzeMars1(candles);
+        const pos = stillOpenPositions[0] as any;
+        const posDir = String(pos.direction ?? "");
+        const posIsCall = posDir === "CALL";
+        const m1Same = m1.decision === (posIsCall ? "BUY" : "SELL");
+        const m1Opposite = m1.decision === (posIsCall ? "SELL" : "BUY");
+        const floatingStr = pos.floating_pnl != null ? `$${Number(pos.floating_pnl).toFixed(2)}` : "?";
+        const healthState = m1Same && m1.confidence >= 0.75
+          ? "HOLD_STRONG"
+          : m1Same && m1.confidence >= 0.5
+            ? "HOLD_WEAK"
+            : m1Opposite && m1.confidence >= 0.7
+              ? "EXIT_PROTECT"
+              : m1Opposite
+                ? "WATCH_REVERSAL"
+                : "HOLD_FLAT";
+        healthAnalysis = `Managing open ${posDir}: ${floatingStr} floating. Mars1 same-side ${m1Same ? (m1.confidence * 100).toFixed(0) : 0}% · opposite ${m1Opposite ? (m1.confidence * 100).toFixed(0) : 0}% · Health: ${healthState}`;
+      } catch {
+        healthAnalysis = `Managing ${stillOpenPositions.length} open position(s). No strategy diagnostics available.`;
+      }
+
+      await supabaseAdmin.from("bot_activity").insert({
+        user_id: context.userId,
+        bot_run_id: data.id,
+        action: "SCAN",
+        symbol: (bot as any).symbol,
+        direction: null,
+        entry_price: last.close,
+        stake: null,
+        stop_loss: null,
+        take_profit: null,
+        pnl: null,
+        confidence: 0,
+        reasoning: healthAnalysis,
+        risk_check: `${stillOpenPositions.length} open · available ${available.toFixed(2)} USD`,
+        ob_zone: null,
+        fvg_zone: null,
+      } as any);
+
+      await supabaseAdmin
+        .from("bot_runs")
+        .update({ last_tick_at: new Date().toISOString(), current_price: last.close } as any)
+        .eq("id", data.id);
+
+      return { ok: true, traded: false, managingOpenPosition: true, openCount: stillOpenPositions.length };
+    }
     const minConfidence = Number((bot as any).min_confidence ?? 0.65);
     const streakThreshold =
       consecutiveLosses >= 3 ? Math.min(0.98, minConfidence + 0.1) : minConfidence;
@@ -665,6 +724,15 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
               minConfidence: streakThreshold,
             }),
           ),
+        );
+      } else if (strategyMode === "mars5") {
+        livePromise = import("@/lib/strategies/mars").then((m) =>
+          m.analyzeMars5(candles, {
+            balance: available,
+            symbolHint: symbol,
+            targetProfitUsd: Number(aiCfg.profit_target_usd ?? 1),
+            minMomentumConfidence: streakThreshold,
+          }),
         );
       } else if (strategyMode === "titan1") {
         livePromise = import("@/lib/strategies/titan1").then((m) => {
