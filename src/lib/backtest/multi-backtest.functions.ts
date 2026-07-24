@@ -141,11 +141,15 @@ export const runMultiBacktest = createServerFn({ method: "POST" })
           const { analyzeMars5 } = await import("../strategies/mars");
           const m5 = analyzeMars5(window, {
             symbolHint: data.symbol,
-            targetProfitUsd: 1,
+            nowEpoch: window.at(-1)?.epoch ?? Math.floor(Date.now() / 1000),
           });
           return {
             ...m5,
-            regime: m5.mode === "RANGE" ? "range" : m5.mode === "MOMENTUM" ? "trend_up" : undefined,
+            regime: m5.detectedRegime === "volatility_expansion" ? "trend_up" :
+                    m5.detectedRegime === "strong_bull_trend" ? "trend_up" :
+                    m5.detectedRegime === "strong_bear_trend" ? "trend_down" :
+                    m5.detectedRegime === "breakout" ? "trend_up" :
+                    m5.detectedRegime === "consolidation" ? "compression" : undefined,
           } as LiveAnalysis;
         }
         default:

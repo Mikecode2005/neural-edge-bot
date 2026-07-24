@@ -60,10 +60,16 @@ export const STRATEGY_CATALOG: { id: StrategyKind; label: string; description: s
       "Symbol-aware adaptive strategy: per-pair volatility profiles, 5-gate filter (RSI/BOS/pullback/spread/RR), session timing tiers (PRIME/GOOD/OFF_PEAK), and profile-calibrated SL/TP from Bayesian optimizer results",
   },
   {
-    id: "mars5",
-    label: "Mars5",
+    id: "mars4-ict",
+    label: "MARS4 Institutional",
     description:
-      "Regime-first fluidity scraper: tight-range rejection entries, expanding-volatility momentum entries, and NORMAL-regime wait discipline",
+      "ICT/SMC institutional-grade engine: 11-regime classifier, volatility filter (ADX>30, ATR/BB), EMA+HHHL trend, M1/M5/M15 alignment, 6-gate entry (LiqSweep/BOS/Displacement/FVG/Pullback/Confirmation), Market Quality Score 0-100, Execute≥90/Optional≥80/WAIT<75",
+  },
+  {
+    id: "mars5",
+    label: "MARS5 Institutional",
+    description:
+      "Institutional Smart Money Trading Engine: 11-regime classifier, M5/M15 trend bias, momentum filter (2-3 candles), market structure (LiqSweep/BOS/CHoCH/FVG/pullback/confirmation), volatility filter (ADX>30, ATR, BB), Opportunity Score 0-100 (execute≥90), adaptive RR (1:2-1:6), session intelligence, explainable AI output, trade logging & performance analytics",
   },
 ];
 

@@ -730,8 +730,9 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
           m.analyzeMars5(candles, {
             balance: available,
             symbolHint: symbol,
-            targetProfitUsd: Number(aiCfg.profit_target_usd ?? 1),
-            minMomentumConfidence: streakThreshold,
+            nowEpoch: Math.floor(Date.now() / 1000),
+            consecutiveLosses: consecutiveLosses,
+            minOpportunityScore: Math.round(streakThreshold * 100),
           }),
         );
       } else if (strategyMode === "titan1") {
@@ -978,7 +979,7 @@ export const mt5RunBotTick = createServerFn({ method: "POST" })
         volume,
         sl,
         tp,
-        comment: `AI OB+FVG ${(decision.confidence * 100).toFixed(0)}%`,
+        comment: `${decision.strategy ?? "MARS"} ${(decision.confidence * 100).toFixed(0)}%`,
       });
       ticket = Number(result.ticket ?? 0);
       fillPrice = Number(result.price ?? decision.entryPrice);

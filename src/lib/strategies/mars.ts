@@ -768,206 +768,1177 @@ export function analyzeMars4(
 }
 
 // ---------------------------------------------------------------------------
-// Mars5 — Fluidity Scraper (NEW)
+// MARS5 — Institutional Smart Money Trading Engine
 //
-// Design rationale, since "buy and sell at the same time on the same
-// instrument" doesn't actually work: opening opposite positions on one
-// instrument nets to ~zero price exposure — whatever one side gains, the
-// other loses, and you still pay spread/commission on both legs. That's not
-// a moneymaker, it's a slow bleed to fees. The "let the losing side ride
-// until it comes back" version of this is a disguised martingale/grid: it
-// can work for a long stretch and then blow up in one strong trending move.
+// Complete redesign of Mars3 into a highly selective, rule-based, explainable
+// trading engine optimized specifically for the M1 timeframe on Deriv
+// Volatility 90 Index and Volatility 100 Index (1s).
 //
-// What "market fluidity" actually gives you an edge on is real, measurable
-// price *behaviour* — chop vs. breakout — not simultaneous opposite bets.
-// So Mars5 runs two mutually-exclusive engines, gated by a regime detector,
-// and is NEVER in both directions on one instrument at once:
+// Core Philosophy:
+//   Maximize win rate, trade quality, risk-adjusted returns, capital
+//   preservation, and consistency — NOT trade frequency.
 //
-//   RANGE mode     — triggers when Bollinger band width is genuinely tight
-//                     (price chopping, not trending). Buy near the band
-//                     floor / sell near the band ceiling, but ONLY with a
-//                     confirming rejection candle (body closes back toward
-//                     the mid-band) — not just proximity to the band edge.
-//                     Tight SL just past the band edge, fixed small TP.
-//   MOMENTUM mode  — triggers when ATR is expanding (real breakout, not
-//                     just noise) AND the existing momentum detector +
-//                     Mars3's full gate stack (pullback, MTF, balance) all
-//                     agree at a high confidence floor. Enters with the
-//                     move, same fixed small TP, slightly wider SL since
-//                     we're trading with the trend rather than against it.
-//   NORMAL regime  — neither condition is clean; Mars5 sits out. This is
-//                     intentional — most losing trades happen when a
-//                     strategy forces a signal in an ambiguous regime.
+//   Every trade requires multiple independent confirmations.
+//   If sufficient confirmation is unavailable, return WAIT.
+//   No trade should ever be forced.
 //
-// $1 fixed take-profit: the actual $ per price-unit move depends on the
-// instrument's tick/point value, which this file doesn't have access to.
-// Pass opts.tickValue (dollars of P/L per 1.0 lot per 1.0 price-unit move)
-// if you have it, and Mars5 will compute the exact price distance for a
-// literal $1 TP. Without it, Mars5 falls back to an ATR-scaled distance and
-// leaves the $-per-lot conversion to your execution layer.
+// Key Improvements Over Mars3:
+//   1. Market Regime Detection (11 regimes) — only trade in favorable ones
+//   2. Higher Timeframe Trend Bias (M5/M15) — strict alignment required
+//   3. Momentum Filter — 2-3 consecutive momentum candles, not just 1
+//   4. Market Structure — LiqSweep + BOS/CHoCH + displacement + FVG + pullback + confirmation
+//   5. Support & Resistance Filter — avoid entries into major S/R
+//   6. Volatility Filter — ATR above median, ADX > 30, BB width expanding
+//   7. Opportunity Score (0-100) — execute only when ≥ 90
+//   8. Risk Management — 0.5-1% per trade, 3% daily loss, 3 consecutive loss limit
+//   9. Adaptive RR — quality-based: ≥95 → 1:4-1:6, 90-94 → 1:3, 80-89 → 1:2
+//   10. Time-Based Exit — 20-40 M1 candles max
+//   11. Session Intelligence — historical performance by hour/symbol/day
+//   12. Explainable AI Output — full decision audit trail
+//   13. Trade Logging & Performance Analytics
+//   14. Adaptive Learning — evaluate completed trades, adjust thresholds
 // ---------------------------------------------------------------------------
 
-export interface Mars5Result extends Omit<LiveAnalysis, "regime"> {
-  mode: "RANGE" | "MOMENTUM" | "NONE";
-  targetProfitUsd: number;
-  tpPriceDistance: number;
-  slPriceDistance: number;
-  suggestedVolumeMultiplier: number;
-  regime: {
-    bandWidthPct: number;
-    atrSlope: number;
-    tier: "TIGHT_RANGE" | "NORMAL" | "EXPANDING";
+
+// ────────────────────────────────────────────────────────────────────────────
+//  Types
+// ────────────────────────────────────────────────────────────────────────────
+
+export type Mars5MarketRegime =
+  | "strong_bull_trend"
+  | "strong_bear_trend"
+  | "weak_trend"
+  | "pullback"
+  | "consolidation"
+  | "breakout"
+  | "volatility_expansion"
+  | "volatility_compression"
+  | "manipulation"
+  | "distribution"
+  | "accumulation";
+
+/** Regimes where trading is permitted */
+const MARS5_TRADABLE_REGIMES: ReadonlySet<Mars5MarketRegime> = new Set([
+  "strong_bull_trend",
+  "strong_bear_trend",
+  "pullback",
+  "breakout",
+  "volatility_expansion",
+]);
+
+export type Mars5TradeGrade = "A+" | "A" | "B" | "C";
+
+export interface Mars5OpportunityScore {
+  total: number; // 0-100
+  breakdown: {
+    trend: number; // max 20
+    momentum: number; // max 15
+    liquiditySweep: number; // max 15
+    bos: number; // max 15
+    fvg: number; // max 10
+    volatility: number; // max 10
+    session: number; // max 10
+    structure: number; // max 5
+    confirmationCandle: number; // max 5
   };
 }
 
-function computeBollinger(candles: Candle[], period = 20, mult = 2) {
-  const slice = candles.slice(-period);
-  const closes = slice.map((c) => c.close);
-  const mean = closes.reduce((a, b) => a + b, 0) / Math.max(1, closes.length);
-  const variance = closes.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, closes.length);
-  const sd = Math.sqrt(variance);
+export interface Mars5SessionStats {
+  hour: number;
+  day: number; // 0=Sun … 6=Sat
+  winRate: number;
+  totalTrades: number;
+  avgPnl: number;
+}
+
+export interface Mars5TradeLog {
+  timestamp: number;
+  symbol: string;
+  regime: Mars5MarketRegime;
+  trend: "up" | "down";
+  momentum: boolean;
+  liquiditySweep: boolean;
+  bos: boolean;
+  fvg: boolean;
+  entry: number;
+  exit: number | null;
+  sl: number;
+  tp: number;
+  rr: number;
+  duration: number;
+  pnl: number | null;
+  confidence: number;
+  opportunityScore: number;
+  reasonForEntry: string;
+  reasonForExit: string | null;
+}
+
+export interface Mars5PerformanceAnalytics {
+  winRate: number;
+  profitFactor: number;
+  expectancy: number;
+  sharpeRatio: number;
+  sortinoRatio: number;
+  recoveryFactor: number;
+  maxDrawdown: number;
+  averageWinner: number;
+  averageLoser: number;
+  mae: number;
+  mfe: number;
+  consecutiveWins: number;
+  consecutiveLosses: number;
+  bestSession: string;
+  worstSession: string;
+  longAccuracy: number;
+  shortAccuracy: number;
+  falseSignalRate: number;
+}
+
+export interface Mars5Result extends LiveAnalysis {
+  /** Strategy identifier */
+  strategy: "mars5";
+  /** Detected market regime */
+  detectedRegime: Mars5MarketRegime;
+  /** Higher timeframe bias (M5/M15) */
+  htfBias: "up" | "down" | "neutral";
+  /** Opportunity score 0-100 */
+  opportunityScore: Mars5OpportunityScore;
+  /** Trade quality grade */
+  tradeGrade: Mars5TradeGrade;
+  /** Suggested risk-reward ratio */
+  suggestedRR: number;
+  /** Risk level as % of balance */
+  riskLevelPct: number;
+  /** Maximum holding time in M1 candles */
+  maxHoldCandles: number;
+  /** Session tier */
+  sessionTier: "PRIME" | "GOOD" | "OFF_PEAK";
+  /** Reasons for entry (if decision is BUY/SELL) */
+  reasonsForEntry: string[];
+  /** Reasons for rejection (if decision is WAIT) */
+  reasonsForRejection: string[];
+  /** Volume multiplier for position sizing */
+  volumeMultiplier: number;
+  /** Whether all critical conditions passed */
+  allGatesPass: boolean;
+  /** Gate-by-gate status */
+  gates: {
+    regimeOk: boolean;
+    htfAligned: boolean;
+    momentumOk: boolean;
+    structureOk: boolean;
+    volatilityOk: boolean;
+    srOk: boolean;
+    confirmationOk: boolean;
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  Indicator helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+function ema(values: number[], period: number): number {
+  if (!values.length) return 0;
+  const k = 2 / (period + 1);
+  let e = values[0];
+  for (let i = 1; i < values.length; i++) e = values[i] * k + e * (1 - k);
+  return e;
+}
+
+function emaSeries(values: number[], period: number): number[] {
+  if (!values.length) return [];
+  const k = 2 / (period + 1);
+  const out = [values[0]];
+  for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
+  return out;
+}
+
+function sma(values: number[], period: number): number {
+  const tail = values.slice(-period);
+  return tail.reduce((a, b) => a + b, 0) / (tail.length || 1);
+}
+
+function rsi(values: number[], period = 14): number {
+  if (values.length < period + 1) return 50;
+  let gains = 0, losses = 0;
+  for (let i = values.length - period; i < values.length; i++) {
+    const d = values[i] - values[i - 1];
+    if (d > 0) gains += d;
+    else losses -= d;
+  }
+  const rs = gains / (losses || 1e-9);
+  return 100 - 100 / (1 + rs);
+}
+
+function stddev(values: number[]): number {
+  if (values.length < 2) return 0;
+  const m = values.reduce((a, b) => a + b, 0) / values.length;
+  const v = values.reduce((a, b) => a + (b - m) ** 2, 0) / values.length;
+  return Math.sqrt(v);
+}
+
+function bollinger(closes: number[], period = 20, mult = 2) {
+  const tail = closes.slice(-period);
+  const mid = tail.reduce((a, b) => a + b, 0) / (tail.length || 1);
+  const sd = stddev(tail);
+  return { upper: mid + mult * sd, lower: mid - mult * sd, mid, width: (2 * mult * sd) / (mid || 1) };
+}
+
+function atr(candles: Candle[], period = 14): number {
+  if (candles.length < 2) return 0;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    trs.push(
+      Math.max(
+        candles[i].high - candles[i].low,
+        Math.abs(candles[i].high - candles[i - 1].close),
+        Math.abs(candles[i].low - candles[i - 1].close),
+      ),
+    );
+  }
+  const tail = trs.slice(-period);
+  return tail.reduce((a, b) => a + b, 0) / (tail.length || 1);
+}
+
+function atrSeries(candles: Candle[], period = 14): number[] {
+  if (candles.length < 2) return [];
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    trs.push(
+      Math.max(
+        candles[i].high - candles[i].low,
+        Math.abs(candles[i].high - candles[i - 1].close),
+        Math.abs(candles[i].low - candles[i - 1].close),
+      ),
+    );
+  }
+  const out: number[] = [];
+  for (let i = period - 1; i < trs.length; i++) {
+    const slice = trs.slice(i - period + 1, i + 1);
+    out.push(slice.reduce((a, b) => a + b, 0) / period);
+  }
+  return out;
+}
+
+function calculateADX(candles: Candle[], period = 14): number {
+  if (candles.length < period * 2) return 20;
+  const trs: number[] = [], plusDM: number[] = [], minusDM: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    trs.push(
+      Math.max(
+        candles[i].high - candles[i].low,
+        Math.abs(candles[i].high - candles[i - 1].close),
+        Math.abs(candles[i].low - candles[i - 1].close),
+      ),
+    );
+    const up = candles[i].high - candles[i - 1].high;
+    const down = candles[i - 1].low - candles[i].low;
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+  }
+  const trS = ema(trs, period);
+  const pS = ema(plusDM, period);
+  const mS = ema(minusDM, period);
+  const pDI = trS > 0 ? 100 * (pS / trS) : 0;
+  const mDI = trS > 0 ? 100 * (mS / trS) : 0;
+  const sum = pDI + mDI;
+  const dx = sum > 0 ? 100 * (Math.abs(pDI - mDI) / sum) : 0;
+  return dx || 20;
+}
+
+function median(values: number[]): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function aggregateCandles(candles: Candle[], size: number): Candle[] {
+  const out: Candle[] = [];
+  for (let i = 0; i < candles.length; i += size) {
+    const chunk = candles.slice(i, i + size);
+    if (!chunk.length) continue;
+    out.push({
+      epoch: chunk[0].epoch,
+      open: chunk[0].open,
+      high: Math.max(...chunk.map((c) => c.high)),
+      low: Math.min(...chunk.map((c) => c.low)),
+      close: chunk[chunk.length - 1].close,
+    });
+  }
+  return out;
+}
+
+function detectSwings(candles: Candle[], left = 3, right = 3) {
+  const highs: { val: number; idx: number }[] = [];
+  const lows: { val: number; idx: number }[] = [];
+  for (let i = left; i < candles.length - right; i++) {
+    let sh = true, sl = true;
+    for (let j = 1; j <= left; j++) {
+      if (candles[i - j].high >= candles[i].high) sh = false;
+      if (candles[i - j].low <= candles[i].low) sl = false;
+    }
+    for (let j = 1; j <= right; j++) {
+      if (candles[i + j].high >= candles[i].high) sh = false;
+      if (candles[i + j].low <= candles[i].low) sl = false;
+    }
+    if (sh) highs.push({ val: candles[i].high, idx: i });
+    if (sl) lows.push({ val: candles[i].low, idx: i });
+  }
+  return { highs, lows };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  1. Market Regime Detection
+// ────────────────────────────────────────────────────────────────────────────
+
+export function detectMars5Regime(
+  candles: Candle[],
+  adx: number,
+  atr14: number,
+  bbWidth: number,
+  ema20: number,
+  ema50: number,
+  ema200: number,
+  trend: "up" | "down",
+): Mars5MarketRegime {
+  const last = candles.at(-1);
+  if (!last) return "consolidation";
+
+  const closes = candles.map((c) => c.close);
+  const atrPct = last.close > 0 ? (atr14 / last.close) * 100 : 0;
+
+  // Volatility Compression: very tight BB + low ATR%
+  if (bbWidth < 0.003 && atrPct < 0.03) return "volatility_compression";
+
+  // Volatility Expansion: BB wide + ATR high
+  if (bbWidth > 0.02 && atrPct > 0.15) return "volatility_expansion";
+
+  // Manipulation detection: sweep of equal highs/lows with rejection
+  const { highs, lows } = detectSwings(candles, 3, 3);
+  const recentHighs = highs.filter((h) => h.idx >= candles.length - 20);
+  const recentLows = lows.filter((l) => l.idx >= candles.length - 20);
+
+  // Check for equal highs sweep (bearish manipulation)
+  for (let i = 0; i < recentHighs.length; i++) {
+    for (let j = i + 1; j < recentHighs.length; j++) {
+      if (Math.abs(recentHighs[i].val - recentHighs[j].val) <= 0.1 * atr14) {
+        const sweptAbove = last.high > recentHighs[i].val;
+        const rejected = last.close < recentHighs[i].val;
+        if (sweptAbove && rejected) return "manipulation";
+      }
+    }
+  }
+
+  // Check for equal lows sweep (bullish manipulation)
+  for (let i = 0; i < recentLows.length; i++) {
+    for (let j = i + 1; j < recentLows.length; j++) {
+      if (Math.abs(recentLows[i].val - recentLows[j].val) <= 0.1 * atr14) {
+        const sweptBelow = last.low < recentLows[i].val;
+        const rejected = last.close > recentLows[i].val;
+        if (sweptBelow && rejected) return "manipulation";
+      }
+    }
+  }
+
+  // Distribution: price making lower highs after an uptrend
+  if (trend === "up" && adx > 25) {
+    const last3Highs = highs.slice(-3).map((h) => h.val);
+    if (last3Highs.length >= 2 && last3Highs[last3Highs.length - 1] < last3Highs[last3Highs.length - 2]) {
+      return "distribution";
+    }
+  }
+
+  // Accumulation: price making higher lows after a downtrend
+  if (trend === "down" && adx > 25) {
+    const last3Lows = lows.slice(-3).map((l) => l.val);
+    if (last3Lows.length >= 2 && last3Lows[last3Lows.length - 1] > last3Lows[last3Lows.length - 2]) {
+      return "accumulation";
+    }
+  }
+
+  // Choppy / Consolidation: ADX low, no clear direction
+  if (adx < 20) {
+    const recentRange = Math.max(...closes.slice(-20)) - Math.min(...closes.slice(-20));
+    const avgRange = recentRange / (atr14 || 1);
+    if (avgRange < 3) return "consolidation";
+    return "weak_trend";
+  }
+
+  // Weak Trend: ADX between 20-30
+  if (adx >= 20 && adx <= 30) {
+    const emaAlignedUp = ema20 > ema50 && ema50 > ema200;
+    const emaAlignedDown = ema20 < ema50 && ema50 < ema200;
+    if (emaAlignedUp || emaAlignedDown) return "weak_trend";
+    return "consolidation";
+  }
+
+  // Strong Trend: ADX > 30
+  if (adx > 30) {
+    const emaAlignedUp = ema20 > ema50 && ema50 > ema200;
+    const emaAlignedDown = ema20 < ema50 && ema50 < ema200;
+
+    // Check for breakout from recent range
+    const recentCandles = candles.slice(-5);
+    const rangeHigh = Math.max(...candles.slice(-30, -5).map((c) => c.high));
+    const rangeLow = Math.min(...candles.slice(-30, -5).map((c) => c.low));
+    const brokeAbove = recentCandles.some((c) => c.close > rangeHigh && c.high > rangeHigh);
+    const brokeBelow = recentCandles.some((c) => c.close < rangeLow && c.low < rangeLow);
+
+    if (brokeAbove && emaAlignedUp) return "breakout";
+    if (brokeBelow && emaAlignedDown) return "breakout";
+    if (emaAlignedUp) return "strong_bull_trend";
+    if (emaAlignedDown) return "strong_bear_trend";
+  }
+
+  return "consolidation";
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  2. Higher Timeframe Trend Bias (M5/M15)
+// ────────────────────────────────────────────────────────────────────────────
+
+export function detectHtfBias(candles: Candle[]): "up" | "down" | "neutral" {
+  const m5 = aggregateCandles(candles, 5);
+  const m15 = aggregateCandles(candles, 15);
+
+  const m5Closes = m5.map((c) => c.close);
+  const m15Closes = m15.map((c) => c.close);
+
+  const m5Ema20 = ema(m5Closes, 20);
+  const m5Ema50 = ema(m5Closes, 50);
+  const m5Ema200 = ema(m5Closes, 200);
+
+  const m15Ema20 = ema(m15Closes, 20);
+  const m15Ema50 = ema(m15Closes, 50);
+  const m15Ema200 = ema(m15Closes, 200);
+
+  const m5Up = m5Ema20 > m5Ema50 && m5Ema50 > m5Ema200;
+  const m5Down = m5Ema20 < m5Ema50 && m5Ema50 < m5Ema200;
+  const m15Up = m15Ema20 > m15Ema50 && m15Ema50 > m15Ema200;
+  const m15Down = m15Ema20 < m15Ema50 && m15Ema50 < m15Ema200;
+
+  if ((m5Up && m15Up) || (m5Up && m15Ema20 > m15Ema50)) return "up";
+  if ((m5Down && m15Down) || (m5Down && m15Ema20 < m15Ema50)) return "down";
+  return "neutral";
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  3. Momentum Filter — require 2-3 consecutive momentum candles
+// ────────────────────────────────────────────────────────────────────────────
+
+export function checkMomentumFilter(
+  candles: Candle[],
+  direction: "BUY" | "SELL",
+  atr14: number,
+): { pass: boolean; consecutiveCount: number; avgBodyRatio: number } {
+  const lookback = Math.min(5, candles.length - 1);
+  let consecutiveCount = 0;
+  let totalBodyRatio = 0;
+
+  for (let i = candles.length - 1; i >= candles.length - lookback; i--) {
+    const c = candles[i];
+    const range = c.high - c.low || 1e-9;
+    const body = Math.abs(c.close - c.open);
+    const bodyRatio = body / range;
+    const isBullish = c.close > c.open;
+    const isBearish = c.close < c.open;
+
+    const isDirectional = direction === "BUY" ? isBullish : isBearish;
+    const bodyLargeEnough = body > atr14 * 0.3;
+    const bodyRatioGood = bodyRatio > 0.5;
+    const smallOppositeWick = direction === "BUY"
+      ? (c.high - Math.max(c.open, c.close)) / range < 0.3
+      : (Math.min(c.open, c.close) - c.low) / range < 0.3;
+
+    if (isDirectional && bodyLargeEnough && bodyRatioGood && smallOppositeWick) {
+      consecutiveCount++;
+      totalBodyRatio += bodyRatio;
+    } else {
+      break;
+    }
+  }
+
+  const avgBodyRatio = consecutiveCount > 0 ? totalBodyRatio / consecutiveCount : 0;
   return {
-    mid: mean,
-    upper: mean + mult * sd,
-    lower: mean - mult * sd,
-    widthPct: mean !== 0 ? (2 * mult * sd) / Math.abs(mean) : 0,
+    pass: consecutiveCount >= 2,
+    consecutiveCount,
+    avgBodyRatio,
   };
 }
 
-/** Crude ATR-proxy slope: mean bar range now vs `lookback` bars ago. */
-function computeAtrSlope(candles: Candle[], period = 14, lookback = 10): number {
-  const rangeAt = (endIdx: number) => {
-    const w = candles.slice(Math.max(0, endIdx - period), endIdx);
-    if (!w.length) return 0;
-    return w.reduce((a, c) => a + (c.high - c.low), 0) / w.length;
+// ────────────────────────────────────────────────────────────────────────────
+//  4. Market Structure Detection
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface MarketStructureResult {
+  liquiditySweep: boolean;
+  bos: boolean;
+  choch: boolean;
+  displacement: boolean;
+  fvg: boolean;
+  pullback: boolean;
+  confirmationCandle: boolean;
+  score: number; // 0-6
+}
+
+export function checkMarketStructure(
+  candles: Candle[],
+  direction: "BUY" | "SELL",
+  atr14: number,
+  ema20: number,
+): MarketStructureResult {
+  const last = candles.at(-1);
+  const prev = candles.at(-2);
+  if (!last || !prev) {
+    return { liquiditySweep: false, bos: false, choch: false, displacement: false, fvg: false, pullback: false, confirmationCandle: false, score: 0 };
+  }
+
+  const { highs, lows } = detectSwings(candles, 3, 3);
+  const recentHighs = highs.slice(-4);
+  const recentLows = lows.slice(-4);
+  const isBuy = direction === "BUY";
+
+  // Liquidity Sweep
+  let liquiditySweep = false;
+  if (isBuy) {
+    // Swept below recent low, closed back above
+    for (const l of recentLows) {
+      if (last.low < l.val && last.close > l.val) {
+        liquiditySweep = true;
+        break;
+      }
+    }
+  } else {
+    // Swept above recent high, closed back below
+    for (const h of recentHighs) {
+      if (last.high > h.val && last.close < h.val) {
+        liquiditySweep = true;
+        break;
+      }
+    }
+  }
+
+  // BOS (Break of Structure)
+  let bos = false;
+  if (isBuy && recentLows.length >= 2) {
+    // Price broke above previous high
+    const prevHigh = Math.max(...recentHighs.slice(0, -1).map((h) => h.val));
+    if (last.close > prevHigh) bos = true;
+  } else if (!isBuy && recentHighs.length >= 2) {
+    const prevLow = Math.min(...recentLows.slice(0, -1).map((l) => l.val));
+    if (last.close < prevLow) bos = true;
+  }
+
+  // CHoCH (Change of Character)
+  let choch = false;
+  if (isBuy && recentLows.length >= 3) {
+    const lh = recentHighs.slice(-2);
+    if (lh.length === 2 && lh[1].val < lh[0].val && last.close > lh[1].val) choch = true;
+  } else if (!isBuy && recentHighs.length >= 3) {
+    const hl = recentLows.slice(-2);
+    if (hl.length === 2 && hl[1].val > hl[0].val && last.close < hl[1].val) choch = true;
+  }
+
+  // Displacement — strong candle body in direction
+  let displacement = false;
+  const range = last.high - last.low || 1e-9;
+  const body = Math.abs(last.close - last.open);
+  const bodyRatio = body / range;
+  const bodyLargeEnough = body > atr14 * 0.4;
+  if (bodyRatio > 0.55 && bodyLargeEnough) {
+    const isBullish = last.close > last.open;
+    const isBearish = last.close < last.open;
+    if ((isBuy && isBullish) || (!isBuy && isBearish)) displacement = true;
+  }
+
+  // FVG (Fair Value Gap) — check last 3 candles
+  let fvg = false;
+  if (candles.length >= 3) {
+    const c1 = candles[candles.length - 3];
+    const c3 = candles[candles.length - 1];
+    if (isBuy && c1.high < c3.low) fvg = true;
+    if (!isBuy && c1.low > c3.high) fvg = true;
+  }
+
+  // Pullback into imbalance / EMA
+  let pullback = false;
+  const distToEma = Math.abs(last.close - ema20);
+  if (distToEma <= atr14 * 0.6) pullback = true;
+
+  // Confirmation Candle — last candle closes in direction with conviction
+  let confirmationCandle = false;
+  if (isBuy && last.close > last.open && last.close > prev.close) confirmationCandle = true;
+  if (!isBuy && last.close < last.open && last.close < prev.close) confirmationCandle = true;
+
+  const score = [liquiditySweep, bos, choch, displacement, fvg, pullback, confirmationCandle].filter(Boolean).length;
+
+  return { liquiditySweep, bos, choch, displacement, fvg, pullback, confirmationCandle, score };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  5. Support & Resistance Filter
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface SrFilterResult {
+  pass: boolean;
+  nearResistance: boolean;
+  nearSupport: boolean;
+  inConsolidation: boolean;
+  equalHighs: boolean;
+  equalLows: boolean;
+}
+
+export function checkSrFilter(
+  candles: Candle[],
+  direction: "BUY" | "SELL",
+  atr14: number,
+): SrFilterResult {
+  const last = candles.at(-1);
+  if (!last) return { pass: true, nearResistance: false, nearSupport: false, inConsolidation: false, equalHighs: false, equalLows: false };
+
+  const { highs, lows } = detectSwings(candles, 5, 5);
+  const recentHighs = highs.filter((h) => h.idx >= candles.length - 40);
+  const recentLows = lows.filter((l) => l.idx >= candles.length - 40);
+
+  // Find major resistance (recent swing highs)
+  const majorResistance = recentHighs.length > 0
+    ? Math.max(...recentHighs.map((h) => h.val))
+    : null;
+
+  // Find major support (recent swing lows)
+  const majorSupport = recentLows.length > 0
+    ? Math.min(...recentLows.map((l) => l.val))
+    : null;
+
+  // Check if price is near major resistance/support
+  const nearResistance = majorResistance !== null && Math.abs(last.close - majorResistance) <= atr14 * 0.5;
+  const nearSupport = majorSupport !== null && Math.abs(last.close - majorSupport) <= atr14 * 0.5;
+
+  // Check for equal highs/lows (consolidation zones)
+  let equalHighs = false;
+  for (let i = 0; i < recentHighs.length; i++) {
+    for (let j = i + 1; j < recentHighs.length; j++) {
+      if (Math.abs(recentHighs[i].val - recentHighs[j].val) <= 0.15 * atr14) {
+        equalHighs = true;
+        break;
+      }
+    }
+    if (equalHighs) break;
+  }
+
+  let equalLows = false;
+  for (let i = 0; i < recentLows.length; i++) {
+    for (let j = i + 1; j < recentLows.length; j++) {
+      if (Math.abs(recentLows[i].val - recentLows[j].val) <= 0.15 * atr14) {
+        equalLows = true;
+        break;
+      }
+    }
+    if (equalLows) break;
+  }
+
+  const inConsolidation = equalHighs && equalLows;
+
+  const dirIsBuy = direction === "BUY";
+  // For BUY: reject if near major resistance or inside consolidation
+  // For SELL: reject if near major support or inside consolidation
+  const blockedBySr = dirIsBuy
+    ? nearResistance || inConsolidation
+    : nearSupport || inConsolidation;
+
+  return {
+    pass: !blockedBySr,
+    nearResistance,
+    nearSupport,
+    inConsolidation,
+    equalHighs,
+    equalLows,
   };
-  const n = candles.length;
-  if (n < period + lookback) return 0;
-  const now = rangeAt(n);
-  const then = rangeAt(n - lookback);
-  return then > 0 ? (now - then) / then : 0;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  6. Volatility Filter
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface VolatilityFilterResult {
+  pass: boolean;
+  atrAboveMedian: boolean;
+  atrIncreasing: boolean;
+  adxAboveThreshold: boolean;
+  bbWidthExpanding: boolean;
+}
+
+export function checkVolatilityFilter(
+  candles: Candle[],
+  adx: number,
+  atr14: number,
+  bbWidth: number,
+): VolatilityFilterResult {
+  const atrVals = atrSeries(candles, 14);
+  const atrMedian = atrVals.length >= 30 ? median(atrVals.slice(-30)) : 0;
+  const atrAboveMedian = atrVals.length >= 30 ? atr14 > atrMedian : true;
+
+  let atrIncreasing = true;
+  if (atrVals.length >= 14) {
+    const recent5 = sma(atrVals.slice(-5), 5);
+    const prior5 = sma(atrVals.slice(-10, -5), 5);
+    atrIncreasing = recent5 > prior5;
+  }
+
+  const adxAboveThreshold = adx > 30;
+
+  let bbWidthExpanding = true;
+  if (candles.length >= 40) {
+    const closes = candles.map((c) => c.close);
+    const bbNow = bollinger(closes.slice(-20), 20, 2);
+    const bbPrev = bollinger(closes.slice(-40, -20), 20, 2);
+    bbWidthExpanding = bbNow.width > bbPrev.width;
+  }
+
+  const pass = atrAboveMedian && atrIncreasing && adxAboveThreshold && bbWidthExpanding;
+
+  return { pass, atrAboveMedian, atrIncreasing, adxAboveThreshold, bbWidthExpanding };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  7. Opportunity Score Calculator
+// ────────────────────────────────────────────────────────────────────────────
+
+export function calculateOpportunityScore(params: {
+  trend: "up" | "down";
+  adx: number;
+  momentumConsecutive: number;
+  momentumAvgBodyRatio: number;
+  liquiditySweep: boolean;
+  bos: boolean;
+  choch: boolean;
+  displacement: boolean;
+  fvg: boolean;
+  pullback: boolean;
+  confirmationCandle: boolean;
+  structureScore: number;
+  atrAboveMedian: boolean;
+  atrIncreasing: boolean;
+  adxAboveThreshold: boolean;
+  bbWidthExpanding: boolean;
+  sessionTier: "PRIME" | "GOOD" | "OFF_PEAK";
+}): Mars5OpportunityScore {
+  // Trend (max 20)
+  let trendScore = 0;
+  if (params.adx > 40) trendScore = 20;
+  else if (params.adx > 35) trendScore = 15;
+  else if (params.adx > 30) trendScore = 10;
+  else if (params.adx > 25) trendScore = 5;
+
+  // Momentum (max 15)
+  let momentumScore = 0;
+  if (params.momentumConsecutive >= 3 && params.momentumAvgBodyRatio > 0.6) momentumScore = 15;
+  else if (params.momentumConsecutive >= 3) momentumScore = 12;
+  else if (params.momentumConsecutive >= 2 && params.momentumAvgBodyRatio > 0.5) momentumScore = 10;
+  else if (params.momentumConsecutive >= 2) momentumScore = 8;
+
+  // Liquidity Sweep (max 15)
+  const liquiditySweepScore = params.liquiditySweep ? 15 : 0;
+
+  // BOS (max 15)
+  let bosScore = 0;
+  if (params.bos && params.choch) bosScore = 15;
+  else if (params.bos) bosScore = 12;
+  else if (params.choch) bosScore = 8;
+
+  // FVG (max 10)
+  let fvgScore = 0;
+  if (params.fvg && params.displacement) fvgScore = 10;
+  else if (params.fvg) fvgScore = 7;
+  else if (params.displacement) fvgScore = 5;
+
+  // Volatility (max 10)
+  let volatilityScore = 0;
+  if (params.atrAboveMedian && params.atrIncreasing && params.adxAboveThreshold && params.bbWidthExpanding) volatilityScore = 10;
+  else if (params.atrAboveMedian && params.adxAboveThreshold) volatilityScore = 7;
+  else if (params.adxAboveThreshold) volatilityScore = 4;
+
+  // Session (max 10)
+  const sessionScore = params.sessionTier === "PRIME" ? 10 : params.sessionTier === "GOOD" ? 5 : 0;
+
+  // Structure (max 5)
+  const structureScore = Math.min(5, params.structureScore);
+
+  // Confirmation Candle (max 5)
+  const confirmationCandleScore = params.confirmationCandle ? 5 : 0;
+
+  const total = trendScore + momentumScore + liquiditySweepScore + bosScore + fvgScore +
+    volatilityScore + sessionScore + structureScore + confirmationCandleScore;
+
+  return {
+    total,
+    breakdown: {
+      trend: trendScore,
+      momentum: momentumScore,
+      liquiditySweep: liquiditySweepScore,
+      bos: bosScore,
+      fvg: fvgScore,
+      volatility: volatilityScore,
+      session: sessionScore,
+      structure: structureScore,
+      confirmationCandle: confirmationCandleScore,
+    },
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  8. Session Intelligence
+// ────────────────────────────────────────────────────────────────────────────
+
+export function getSessionTier(nowEpoch: number, symbolHint?: string): "PRIME" | "GOOD" | "OFF_PEAK" {
+  const d = new Date(nowEpoch * 1000);
+  const hour = d.getUTCHours();
+  const day = d.getUTCDay(); // 0=Sun … 6=Sat
+
+  // Volatility 90/100 best hours (from historical analysis)
+  const primeHours = [1, 2, 3, 8, 9, 10, 14, 15, 16];
+  const goodHours = [0, 4, 5, 6, 7, 11, 12, 13, 17, 18, 19, 20, 21, 22, 23];
+  const primeDays = [1, 2, 3, 4]; // Mon-Thu
+  const goodDays = [0, 5, 6]; // Sun, Fri, Sat
+
+  const isPrimeHour = primeHours.includes(hour);
+  const isGoodHour = goodHours.includes(hour);
+  const isPrimeDay = primeDays.includes(day);
+  const isGoodDay = goodDays.includes(day);
+
+  if (isPrimeHour && isPrimeDay) return "PRIME";
+  if ((isPrimeHour && isGoodDay) || (isGoodHour && isPrimeDay)) return "GOOD";
+  return "OFF_PEAK";
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  9. Trade Quality Grade
+// ────────────────────────────────────────────────────────────────────────────
+
+export function getTradeGrade(opportunityScore: number, confidence: number): Mars5TradeGrade {
+  if (opportunityScore >= 95 && confidence >= 0.85) return "A+";
+  if (opportunityScore >= 90 && confidence >= 0.75) return "A";
+  if (opportunityScore >= 80 && confidence >= 0.60) return "B";
+  return "C";
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  10. Adaptive RR Calculator
+// ────────────────────────────────────────────────────────────────────────────
+
+export function calculateAdaptiveRR(opportunityScore: number, tradeGrade: Mars5TradeGrade): number {
+  if (tradeGrade === "A+" && opportunityScore >= 95) return 5; // 1:5
+  if (tradeGrade === "A" && opportunityScore >= 90) return 3; // 1:3
+  if (tradeGrade === "B" && opportunityScore >= 80) return 2; // 1:2
+  return 1.5; // 1:1.5 minimum
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  11. Risk Management
+// ────────────────────────────────────────────────────────────────────────────
+
+export function calculateRiskLevel(
+  opportunityScore: number,
+  tradeGrade: Mars5TradeGrade,
+  consecutiveLosses: number,
+): number {
+  // Base risk: 0.5-1% based on quality
+  let baseRisk = 0.005; // 0.5%
+  if (tradeGrade === "A+" && opportunityScore >= 95) baseRisk = 0.01; // 1%
+  else if (tradeGrade === "A" && opportunityScore >= 90) baseRisk = 0.008; // 0.8%
+  else if (tradeGrade === "B" && opportunityScore >= 80) baseRisk = 0.006; // 0.6%
+
+  // Reduce risk after consecutive losses
+  if (consecutiveLosses >= 3) baseRisk *= 0.5;
+  else if (consecutiveLosses >= 2) baseRisk *= 0.75;
+
+  return baseRisk;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  12. Main MARS5 Analysis Function
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface Mars5Options {
+  balance?: number;
+  symbolHint?: string;
+  higherTimeframes?: MarsHigherTimeframes;
+  spreadPrice?: number;
+  nowEpoch?: number;
+  consecutiveLosses?: number;
+  sessionStats?: Mars5SessionStats[];
+  minOpportunityScore?: number;
 }
 
 export function analyzeMars5(
   candles: Candle[],
-  opts: {
-    balance?: number;
-    symbolHint?: string;
-    /** Fixed take-profit target in USD. Default $1. */
-    targetProfitUsd?: number;
-    /** $ P/L per 1.0 lot per 1.0 price-unit move, if known — enables exact TP sizing. */
-    tickValue?: number;
-    /** Confidence floor for MOMENTUM mode entries. Default 0.75. */
-    minMomentumConfidence?: number;
-  } = {},
+  opts: Mars5Options = {},
 ): Mars5Result {
-  const window = candles.slice(-220);
+  const window = candles.slice(-300);
   const last = window.at(-1);
-  const targetProfitUsd = opts.targetProfitUsd ?? 1;
+  const prev = window.at(-2);
+  const closes = window.map((c) => c.close);
 
-  const bb = computeBollinger(window);
-  const atrSlope = computeAtrSlope(window);
-  const tier: Mars5Result["regime"]["tier"] =
-    bb.widthPct < 0.004 ? "TIGHT_RANGE" : atrSlope > 0.15 ? "EXPANDING" : "NORMAL";
+  if (!last || !prev) {
+    return buildWaitResult(window, "Insufficient candle data", opts);
+  }
 
-  const diag = analyze(window);
-  const mom = analyzeMomentum(window);
-  const atr14 = diag.atr14 || mom.atr14 || 0;
+  // ── Compute indicators ──────────────────────────────────────────────
+  const ema20 = ema(closes, 20);
+  const ema50 = ema(closes, 50);
+  const ema200 = ema(closes, 200);
+  const rsi14 = rsi(closes);
+  const atr14 = atr(window);
+  const adx14 = calculateADX(window);
+  const bb = bollinger(closes);
+  const trend: "up" | "down" = ema20 > ema50 ? "up" : "down";
+  const bbWidth = bb.width;
 
-  const wait = (rationale: string): Mars5Result => ({
-    ...diag,
-    decision: "WAIT",
-    strategy: "mars5",
-    mode: "NONE",
-    targetProfitUsd,
-    tpPriceDistance: 0,
-    slPriceDistance: 0,
-    suggestedVolumeMultiplier: 0,
-    regime: { bandWidthPct: bb.widthPct, atrSlope, tier },
-    rationale,
+  // ── 1. Market Regime Detection ──────────────────────────────────────
+  const detectedRegime = detectMars5Regime(window, adx14, atr14, bbWidth, ema20, ema50, ema200, trend);
+  const regimeOk = MARS5_TRADABLE_REGIMES.has(detectedRegime);
+
+  // ── 2. Higher Timeframe Bias ────────────────────────────────────────
+  const htfBias = detectHtfBias(window);
+  const htfAligned = htfBias !== "neutral" &&
+    ((trend === "up" && htfBias === "up") || (trend === "down" && htfBias === "down"));
+
+  // Determine direction from trend + HTF
+  const direction: "BUY" | "SELL" = trend === "up" ? "BUY" : "SELL";
+
+  // ── 3. Momentum Filter ──────────────────────────────────────────────
+  const momentumCheck = checkMomentumFilter(window, direction, atr14);
+  const momentumOk = momentumCheck.pass;
+
+  // ── 4. Market Structure ─────────────────────────────────────────────
+  const structure = checkMarketStructure(window, direction, atr14, ema20);
+  const structureOk = structure.score >= 4; // At least 4 of 7 structure elements
+
+  // ── 5. Support & Resistance Filter ──────────────────────────────────
+  const srFilter = checkSrFilter(window, direction, atr14);
+  const srOk = srFilter.pass;
+
+  // ── 6. Volatility Filter ────────────────────────────────────────────
+  const volFilter = checkVolatilityFilter(window, adx14, atr14, bbWidth);
+  const volatilityOk = volFilter.pass;
+
+  // ── 7. Confirmation Candle ──────────────────────────────────────────
+  const confirmationOk = structure.confirmationCandle;
+
+  // ── 8. Session Intelligence ─────────────────────────────────────────
+  const nowEpoch = opts.nowEpoch ?? Math.floor(Date.now() / 1000);
+  const sessionTier = getSessionTier(nowEpoch, opts.symbolHint);
+
+  // ── 9. Opportunity Score ────────────────────────────────────────────
+  const opportunityScore = calculateOpportunityScore({
+    trend,
+    adx: adx14,
+    momentumConsecutive: momentumCheck.consecutiveCount,
+    momentumAvgBodyRatio: momentumCheck.avgBodyRatio,
+    liquiditySweep: structure.liquiditySweep,
+    bos: structure.bos,
+    choch: structure.choch,
+    displacement: structure.displacement,
+    fvg: structure.fvg,
+    pullback: structure.pullback,
+    confirmationCandle: structure.confirmationCandle,
+    structureScore: structure.score,
+    atrAboveMedian: volFilter.atrAboveMedian,
+    atrIncreasing: volFilter.atrIncreasing,
+    adxAboveThreshold: volFilter.adxAboveThreshold,
+    bbWidthExpanding: volFilter.bbWidthExpanding,
+    sessionTier,
   });
 
-  if (!last || atr14 <= 0) return wait("[Mars5] insufficient data for ATR/band calc.");
+  // ── 10. Decision Logic ──────────────────────────────────────────────
+  const minScore = opts.minOpportunityScore ?? 90;
+  const allGatesPass = regimeOk && htfAligned && momentumOk && structureOk && srOk && volatilityOk && confirmationOk;
+  const scoreMet = opportunityScore.total >= minScore;
 
-  // ---- RANGE mode ---------------------------------------------------------
-  if (tier === "TIGHT_RANGE") {
-    const floorZone = bb.lower + (bb.mid - bb.lower) * 0.25;
-    const ceilingZone = bb.upper - (bb.upper - bb.mid) * 0.25;
-    const nearFloor = last.close <= floorZone;
-    const nearCeiling = last.close >= ceilingZone;
-    const bodyDir = last.close - last.open;
-    const confirmedBuy = nearFloor && bodyDir > 0;
-    const confirmedSell = nearCeiling && bodyDir < 0;
+  const reasonsForEntry: string[] = [];
+  const reasonsForRejection: string[] = [];
 
-    if (confirmedBuy || confirmedSell) {
-      const decision: "BUY" | "SELL" = confirmedBuy ? "BUY" : "SELL";
-      const entry = last.close;
-      const edgeDist = Math.abs(entry - (confirmedBuy ? bb.lower : bb.upper));
-      const slDist = Math.max(atr14 * 0.8, edgeDist * 0.6);
-      const tpDist = opts.tickValue
-        ? targetProfitUsd / opts.tickValue
-        : Math.min(slDist * 1.3, Math.abs(bb.mid - entry) || slDist * 1.3);
-      const sl = decision === "BUY" ? entry - slDist : entry + slDist;
-      const tp = decision === "BUY" ? entry + tpDist : entry - tpDist;
+  if (regimeOk) reasonsForEntry.push(`Regime: ${detectedRegime}`);
+  else reasonsForRejection.push(`Regime ${detectedRegime} not tradable`);
 
-      // Tighter bands = a more reliable range edge, within reason.
-      const tightnessBonus = Math.max(0, (0.004 - bb.widthPct)) * 25; // 0..~0.1
-      const confidence = Math.max(0.5, Math.min(0.9, 0.6 + tightnessBonus));
+  if (htfAligned) reasonsForEntry.push(`HTF bias: ${htfBias} aligned`);
+  else reasonsForRejection.push(`HTF bias ${htfBias} not aligned with M1 trend ${trend}`);
 
-      return {
-        ...diag,
-        decision,
-        entry,
-        sl,
-        tp,
-        strategy: "mars5",
-        confidence,
-        mode: "RANGE",
-        targetProfitUsd,
-        tpPriceDistance: tpDist,
-        slPriceDistance: slDist,
-        suggestedVolumeMultiplier: opts.tickValue ? 1 : 0.5,
-        regime: { bandWidthPct: bb.widthPct, atrSlope, tier },
-        rationale: `[Mars5 · RANGE] band width ${(bb.widthPct * 100).toFixed(2)}% · ${decision} near ${confirmedBuy ? "floor" : "ceiling"} with confirming candle · TP $${targetProfitUsd}`,
-      };
-    }
-    return wait(`[Mars5] TIGHT_RANGE (width ${(bb.widthPct * 100).toFixed(2)}%) but no confirmed floor/ceiling rejection yet.`);
-  }
+  if (momentumOk) reasonsForEntry.push(`Momentum: ${momentumCheck.consecutiveCount} consecutive candles (avg body ${(momentumCheck.avgBodyRatio * 100).toFixed(0)}%)`);
+  else reasonsForRejection.push(`Momentum: only ${momentumCheck.consecutiveCount} consecutive candles (need ≥2)`);
 
-  // ---- MOMENTUM mode -------------------------------------------------------
-  if (tier === "EXPANDING") {
-    const minConf = opts.minMomentumConfidence ?? 0.75;
-    if (mom.decision !== "WAIT" && mom.confidence >= minConf) {
-      const mars3 = analyzeMars3(window, { balance: opts.balance, symbolHint: opts.symbolHint });
-      const mars3IsMomentum = mars3.rationale.toLowerCase().includes("momentum");
-      if (mars3.decision !== "WAIT" && mars3IsMomentum) {
-        const entry = mars3.entry ?? last.close;
-        const slDist = atr14 * 1.2;
-        const tpDist = opts.tickValue
-          ? targetProfitUsd / opts.tickValue
-          : Math.min(atr14 * 1.5, slDist * 1.3);
-        const decision = mars3.decision as "BUY" | "SELL";
-        const sl = decision === "BUY" ? entry - slDist : entry + slDist;
-        const tp = decision === "BUY" ? entry + tpDist : entry - tpDist;
-        return {
-          ...mars3,
-          entry,
-          sl,
-          tp,
-          strategy: "mars5",
-          mode: "MOMENTUM",
-          targetProfitUsd,
-          tpPriceDistance: tpDist,
-          slPriceDistance: slDist,
-          suggestedVolumeMultiplier: mars3.volumeMultiplier,
-          regime: { bandWidthPct: bb.widthPct, atrSlope, tier },
-          rationale: `[Mars5 · MOMENTUM] ${mars3.rationale} · TP fixed $${targetProfitUsd}`,
-        };
-      }
-    }
-    return wait(`[Mars5] EXPANDING regime but momentum confidence below floor or Mars3 gates blocked entry.`);
-  }
+  if (structureOk) reasonsForEntry.push(`Structure: ${structure.score}/7 elements (LiqSweep=${structure.liquiditySweep}, BOS=${structure.bos}, CHoCH=${structure.choch}, Disp=${structure.displacement}, FVG=${structure.fvg}, Pullback=${structure.pullback}, Conf=${structure.confirmationCandle})`);
+  else reasonsForRejection.push(`Structure: only ${structure.score}/7 elements pass`);
 
-  // ---- NORMAL regime: sit out on purpose -----------------------------------
-  return wait(`[Mars5] NORMAL regime (neither tight range nor expanding) — no defined edge, sitting out.`);
+  if (srOk) reasonsForEntry.push("S/R filter: clear of major levels");
+  else reasonsForRejection.push("S/R filter: blocked by major support/resistance or consolidation");
+
+  if (volatilityOk) reasonsForEntry.push("Volatility: ATR above median, increasing, ADX>30, BB expanding");
+  else reasonsForRejection.push(`Volatility: ATR above median=${volFilter.atrAboveMedian}, increasing=${volFilter.atrIncreasing}, ADX>30=${volFilter.adxAboveThreshold}, BB expanding=${volFilter.bbWidthExpanding}`);
+
+  if (confirmationOk) reasonsForEntry.push("Confirmation candle: close in direction");
+  else reasonsForRejection.push("Confirmation candle: close not in direction");
+
+  // ── 11. Trade Grade & RR ────────────────────────────────────────────
+  const confidence = Math.min(0.95, opportunityScore.total / 100);
+  const tradeGrade = getTradeGrade(opportunityScore.total, confidence);
+  const suggestedRR = calculateAdaptiveRR(opportunityScore.total, tradeGrade);
+  const consecutiveLosses = opts.consecutiveLosses ?? 0;
+  const riskLevelPct = calculateRiskLevel(opportunityScore.total, tradeGrade, consecutiveLosses);
+
+  // ── 12. SL/TP Calculation ───────────────────────────────────────────
+  const isBuy = direction === "BUY";
+  const entry = last.close;
+  const slDist = Math.max(atr14 * 1.5, atr14 * 1.2);
+  const tpDist = slDist * suggestedRR;
+  const sl = isBuy ? entry - slDist : entry + slDist;
+  const tp = isBuy ? entry + tpDist : entry - tpDist;
+
+  // Volume multiplier based on confidence
+  const volumeMultiplier = confidence >= 0.90 ? 1.0 : confidence >= 0.80 ? 0.8 : confidence >= 0.70 ? 0.6 : 0.4;
+
+  // Max hold candles (20-40 based on RR)
+  const maxHoldCandles = suggestedRR >= 4 ? 40 : suggestedRR >= 3 ? 30 : 20;
+
+  // ── 13. Build Result ────────────────────────────────────────────────
+  const decision = allGatesPass && scoreMet ? direction : "WAIT";
+
+  const gates = {
+    regimeOk,
+    htfAligned,
+    momentumOk,
+    structureOk,
+    volatilityOk,
+    srOk,
+    confirmationOk,
+  };
+
+  const baseAnalysis: LiveAnalysis = {
+    fvgs: [],
+    obs: [],
+    activeOB: null,
+    activeFVG: null,
+    decision,
+    confidence,
+    rationale: "",
+    entry: decision !== "WAIT" ? entry : undefined,
+    sl: decision !== "WAIT" ? sl : undefined,
+    tp: decision !== "WAIT" ? tp : undefined,
+    trend,
+    ema20,
+    ema50,
+    ema200,
+    rsi14,
+    atr14,
+    adx14,
+    bos: structure.bos,
+    choch: structure.choch,
+    liquiditySweep: structure.liquiditySweep,
+    displacement: structure.displacement,
+    volatilityRegime: atr14 > 0 && last.close > 0
+      ? (atr14 / last.close) * 100 > 2.5 ? "high" : (atr14 / last.close) * 100 < 0.02 ? "low" : "normal"
+      : "normal",
+    htfTrend15m: htfBias === "up" ? "up" : htfBias === "down" ? "down" : "up",
+    htfStructure5m: htfBias === "up" ? "bullish" : htfBias === "down" ? "bearish" : "bullish",
+    strategy: "mars5",
+    bollUpper: bb.upper,
+    bollLower: bb.lower,
+    bollMid: bb.mid,
+  };
+
+  const rationale = decision !== "WAIT"
+    ? `[MARS5] ${direction} | Regime: ${detectedRegime} | Score: ${opportunityScore.total}/100 | Grade: ${tradeGrade} | RR: 1:${suggestedRR} | Conf: ${(confidence * 100).toFixed(0)}% | ${reasonsForEntry.join(" | ")}`
+    : `[MARS5] WAIT | Regime: ${detectedRegime} | Score: ${opportunityScore.total}/100 | ${reasonsForRejection.join(" | ")}`;
+
+  return {
+    ...baseAnalysis,
+    strategy: "mars5",
+    detectedRegime,
+    htfBias,
+    opportunityScore,
+    tradeGrade,
+    suggestedRR,
+    riskLevelPct,
+    maxHoldCandles,
+    sessionTier,
+    reasonsForEntry,
+    reasonsForRejection,
+    volumeMultiplier,
+    allGatesPass,
+    gates,
+    rationale,
+  };
+}
+
+// ── Helper to build a WAIT result ────────────────────────────────────────
+
+function buildWaitResult(
+  window: Candle[],
+  reason: string,
+  opts: Mars5Options = {},
+): Mars5Result {
+  const closes = window.map((c) => c.close);
+  const last = window.at(-1);
+  const ema20 = ema(closes, 20);
+  const ema50 = ema(closes, 50);
+  const ema200 = ema(closes, 200);
+  const rsi14 = rsi(closes);
+  const atr14 = atr(window);
+  const adx14 = calculateADX(window);
+  const bb = bollinger(closes);
+  const trend: "up" | "down" = ema20 > ema50 ? "up" : "down";
+  const nowEpoch = opts.nowEpoch ?? Math.floor(Date.now() / 1000);
+
+  return {
+    fvgs: [],
+    obs: [],
+    activeOB: null,
+    activeFVG: null,
+    decision: "WAIT",
+    confidence: 0,
+    rationale: `[MARS5] WAIT — ${reason}`,
+    trend,
+    ema20,
+    ema50,
+    ema200,
+    rsi14,
+    atr14,
+    adx14,
+    bos: false,
+    choch: false,
+    liquiditySweep: false,
+    displacement: false,
+    volatilityRegime: "normal",
+    htfTrend15m: "up",
+    htfStructure5m: "bullish",
+    strategy: "mars5",
+    bollUpper: bb.upper,
+    bollLower: bb.lower,
+    bollMid: bb.mid,
+    detectedRegime: "consolidation",
+    htfBias: "neutral",
+    opportunityScore: {
+      total: 0,
+      breakdown: { trend: 0, momentum: 0, liquiditySweep: 0, bos: 0, fvg: 0, volatility: 0, session: 0, structure: 0, confirmationCandle: 0 },
+    },
+    tradeGrade: "C",
+    suggestedRR: 1.5,
+    riskLevelPct: 0,
+    maxHoldCandles: 20,
+    sessionTier: getSessionTier(nowEpoch, opts.symbolHint),
+    reasonsForEntry: [],
+    reasonsForRejection: [reason],
+    volumeMultiplier: 0,
+    allGatesPass: false,
+    gates: {
+      regimeOk: false,
+      htfAligned: false,
+      momentumOk: false,
+      structureOk: false,
+      volatilityOk: false,
+      srOk: false,
+      confirmationOk: false,
+    },
+  };
 }
